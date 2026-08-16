@@ -31,7 +31,9 @@ chmod +x "$RUNTIME/$NODE_BIN" 2>/dev/null || true
 # 2. Standalone install of DSH in a staging dir. pnpm's default layout is
 #    symlink-based and cannot simply be copied, so we do a fresh hoisted
 #    install (flat node_modules, real files) and copy the result.
-DSH_VERSION="$(node -p "require('$DSH_SRC/package.json').version")" 2>/dev/null || {
+# Read the version with a relative require: on Windows (Git Bash on CI) the
+# POSIX path in $DSH_SRC would not be translated for native node.exe.
+DSH_VERSION="$(cd "$ROOT" && node -p "require('./node_modules/@deepseek-ai/dsh/package.json').version")" 2>/dev/null || {
   echo "error: $DSH_SRC missing, run pnpm install first" >&2
   exit 1
 }
