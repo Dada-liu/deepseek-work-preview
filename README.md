@@ -46,10 +46,24 @@ pnpm tauri build
 - `src-tauri/target/release/bundle/macos/DeepSeek Work.app`（约 458 MB）
 - `src-tauri/target/release/bundle/dmg/DeepSeek Work_0.1.0_aarch64.dmg`（约 99 MB）
 
-已复制到：
+## 发布（GitHub Releases）
 
-- `dist-desktop/DeepSeek Work.app`
-- `dist-desktop/DeepSeek Work_0.1.0_aarch64.dmg`
+安装包体积大（dmg 约 99 MB），不入库，统一通过 GitHub Releases 分发。两种方式：
+
+**CI 发布（推荐）**：`.github/workflows/release.yml` 在打 tag 时自动在 macOS runner 上完成「安装依赖 → 准备内嵌运行时 → 构建 → 创建 Release 并上传 dmg」：
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+**本地发布**：`scripts/release.sh` 在本机完成同样流程并调用 `gh` 创建 Release（需先 `brew install gh && gh auth login`）：
+
+```bash
+bash scripts/release.sh          # 按当前版本号发布
+bash scripts/release.sh patch    # 先 bump 补丁版本（同步 tauri.conf.json 与 Cargo.toml）再发布
+```
+
+两种方式都会把产物同步复制到 `dist-desktop/`（该目录已 gitignore）。
 
 ## 功能
 
@@ -104,7 +118,10 @@ open dist-desktop/DeepSeek\ Work.app
 │   ├── tauri.conf.json     Tauri 配置（bundle.resources 引用 runtime/）
 │   └── Cargo.toml          Rust 依赖
 ├── scripts/
-│   └── prepare-runtime.sh  生成自包含运行环境（Node + DSH 依赖树）
+│   ├── prepare-runtime.sh  生成自包含运行环境（Node + DSH 依赖树）
+│   └── release.sh          本地一键构建并发布 GitHub Release
+├── .github/workflows/
+│   └── release.yml         打 tag 触发 CI 构建并发布 Release
 ├── dist-desktop/           已构建的安装包
 ├── implement-plan.md       实施规范参考文档
 └── README.md               本文件

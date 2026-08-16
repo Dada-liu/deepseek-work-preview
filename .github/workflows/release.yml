@@ -1,0 +1,49 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Prepare embedded runtime (Node + DSH tree)
+        run: bash scripts/prepare-runtime.sh
+
+      - name: Build app and dmg
+        run: pnpm tauri build
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          TAG="${GITHUB_REF_NAME:-v$VERSION}"
+          DMG="src-tauri/target/release/bundle/dmg/DeepSeek Work_${VERSION}_aarch64.dmg"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$DMG" --clobber
+          else
+            gh release create "$TAG" "$DMG" \
+              --title "DeepSeek Work $TAG" \
+              --generate-notes
+          fi
