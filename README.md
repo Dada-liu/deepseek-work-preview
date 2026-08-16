@@ -50,7 +50,7 @@ pnpm tauri build
 
 安装包体积大（dmg 约 99 MB），不入库，统一通过 GitHub Releases 分发。两种方式：
 
-**CI 发布（推荐）**：`.github/workflows/release.yml` 在打 tag 时自动在 macOS runner 上完成「安装依赖 → 准备内嵌运行时 → 构建 → 创建 Release 并上传 dmg」：
+**CI 发布（推荐）**：`.github/workflows/release.yml` 在打 tag 时自动并行构建 macOS（`macos-latest`，产出 dmg）和 Windows（`windows-latest`，产出 NSIS 安装程序 exe），并上传到同一个 Release：
 
 ```bash
 git tag v0.1.0 && git push origin v0.1.0
@@ -97,8 +97,8 @@ bash scripts/release.sh patch    # 先 bump 补丁版本（同步 tauri.conf.jso
 
 无。安装包自包含 Node.js 与 DSH 运行时：
 
-1. 首次启动会在 `~/Library/Application Support/com.deepseek-harness.desktop/runtime` 解包运行环境（约占用 450 MB 磁盘）。
-2. 应用未签名，首次打开需在 Finder 中右键 →「打开」。
+- **macOS**：首次启动解包运行环境到 `~/Library/Application Support/com.deepseek-harness.desktop/runtime`（约 450 MB）；应用未签名，首次打开需在 Finder 中右键 →「打开」
+- **Windows**：NSIS 安装包（`DeepSeek Work_<version>_x64-setup.exe`）；首次启动解包运行环境到 `%APPDATA%/com.deepseek-harness.desktop/runtime`；应用未签名，SmartScreen 提示时选「仍要运行」
 
 ```bash
 open dist-desktop/DeepSeek\ Work.app

@@ -147,6 +147,15 @@ fn app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+/// The bundled Node binary name differs by platform.
+fn node_bin_name() -> &'static str {
+    if cfg!(windows) {
+        "node.exe"
+    } else {
+        "node"
+    }
+}
+
 /// Directory the bundled runtime is extracted to (writable).
 fn runtime_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app
@@ -156,7 +165,7 @@ fn runtime_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .join("runtime"))
 }
 
-/// The runtime shipped inside the .app bundle (read-only).
+/// The runtime shipped inside the app bundle (read-only).
 /// In debug builds the bundle layout does not exist yet, so fall back to the
 /// source tree prepared by scripts/prepare-runtime.sh.
 fn bundled_runtime_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -165,12 +174,12 @@ fn bundled_runtime_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .resource_dir()
         .map_err(|e| e.to_string())?
         .join("runtime");
-    if bundled.join("node").exists() {
+    if bundled.join(node_bin_name()).exists() {
         return Ok(bundled);
     }
     if cfg!(debug_assertions) {
         let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("runtime");
-        if dev.join("node").exists() {
+        if dev.join(node_bin_name()).exists() {
             return Ok(dev);
         }
     }
@@ -212,7 +221,7 @@ fn ensure_runtime(app: &AppHandle, state: &State<AppState>) -> Result<PathBuf, S
     let extracted = fs::read_to_string(&marker)
         .map(|m| m == wanted)
         .unwrap_or(false)
-        && dir.join("node").exists();
+        && dir.join(node_bin_name()).exists();
     if !extracted {
         status(app, "首次启动，正在准备运行环境…");
         if dir.exists() {
@@ -221,8 +230,9 @@ fn ensure_runtime(app: &AppHandle, state: &State<AppState>) -> Result<PathBuf, S
         if let Some(parent) = dir.parent() {
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        // Prefer APFS clonefile copy (a few seconds for ~450 MB), fall back
-        // to a plain recursive copy on non-APFS volumes.
+        // macOS: prefer APFS clonefile copy (a few seconds for ~450 MB).
+        // Other platforms (and non-APFS volumes) use a plain recursive copy.
+        #[cfg(target_os = "macos")]
         let cloned = Command::new("cp")
             .arg("-Rc")
             .arg(&bundled)
@@ -230,15 +240,22 @@ fn ensure_runtime(app: &AppHandle, state: &State<AppState>) -> Result<PathBuf, S
             .status()
             .map(|s| s.success())
             .unwrap_or(false);
+        #[cfg(not(target_os = "macos"))]
+        let cloned = false;
         if !cloned {
             copy_dir_all(&bundled, &dir)?;
         }
-        // Make sure the Node binary is executable and not quarantined.
+        // Make sure the Node binary is executable (Unix) and not quarantined
+        // (macOS Gatekeeper).
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(dir.join("node"), fs::Permissions::from_mode(0o755));
+            let _ = fs::set_permissions(
+                dir.join(node_bin_name()),
+                fs::Permissions::from_mode(0o755),
+            );
         }
+        #[cfg(target_os = "macos")]
         let _ = Command::new("xattr")
             .arg("-dr")
             .arg("com.apple.quarantine")
@@ -252,7 +269,7 @@ fn ensure_runtime(app: &AppHandle, state: &State<AppState>) -> Result<PathBuf, S
 
 fn spawn_dsh_web(app: &AppHandle) -> Result<DshProcess, String> {
     let runtime = runtime_dir(app)?;
-    let node = runtime.join("node");
+    let node = runtime.join(node_bin_name());
     let script = runtime.join("node_modules/@deepseek-ai/dsh/lib/bin.js");
     if !node.exists() || !script.exists() {
         return Err("运行环境不完整，请重启应用以重新初始化".to_string());

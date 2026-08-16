@@ -12,16 +12,21 @@ echo "==> Cleaning $RUNTIME"
 rm -rf "$RUNTIME"
 mkdir -p "$RUNTIME/node_modules/@deepseek-ai"
 
-# 1. Standalone Node.js binary (official builds are single self-contained files).
-NODE_SRC="$(command -v node || true)"
+# 1. Standalone Node.js binary (official builds are single self-contained
+#    files). On Windows (Git Bash / MSYS on CI runners) it is node.exe.
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) NODE_BIN="node.exe" ;;
+  *) NODE_BIN="node" ;;
+esac
+NODE_SRC="$(command -v "$NODE_BIN" || command -v node || true)"
 if [ -z "$NODE_SRC" ]; then
   echo "error: node not found in PATH" >&2
   exit 1
 fi
 echo "==> Copying Node.js from $NODE_SRC"
-cp -L "$NODE_SRC" "$RUNTIME/node"
-chmod +x "$RUNTIME/node"
-"$RUNTIME/node" --version
+cp -L "$NODE_SRC" "$RUNTIME/$NODE_BIN"
+chmod +x "$RUNTIME/$NODE_BIN" 2>/dev/null || true
+"$RUNTIME/$NODE_BIN" --version
 
 # 2. Standalone install of DSH in a staging dir. pnpm's default layout is
 #    symlink-based and cannot simply be copied, so we do a fresh hoisted
@@ -50,7 +55,7 @@ du -sh "$RUNTIME"
 # 3. Smoke test: the copied runtime must boot standalone.
 echo "==> Smoke-testing runtime"
 LOG="$(mktemp)"
-"$RUNTIME/node" "$RUNTIME/node_modules/@deepseek-ai/dsh/lib/bin.js" web --port 0 > "$LOG" 2>&1 &
+"$RUNTIME/$NODE_BIN" "$RUNTIME/node_modules/@deepseek-ai/dsh/lib/bin.js" web --port 0 > "$LOG" 2>&1 &
 PID=$!
 sleep 12
 kill -9 "$PID" 2>/dev/null || true
