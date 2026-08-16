@@ -129,4 +129,8 @@ open dist-desktop/DeepSeek\ Work.app
 
 ## 许可证
 
-MIT
+本项目基于 [MIT](LICENSE) 协议发布。
+
+本项目基于 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`@deepseek-ai/dsh`，MIT，Copyright (c) 2026 DeepSeek）实现：安装包内嵌其完整运行时，桌面窗口展示的即 DSH 官方 Web UI，应用图标复用了 DSH 的鲸鱼 logo。
+
+第三方组件及其协议声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
