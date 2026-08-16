@@ -277,11 +277,19 @@ fn spawn_dsh_web(app: &AppHandle) -> Result<DshProcess, String> {
 
     status(app, "正在启动 DSH 服务…");
 
+    // DSH resolves its default workspace and config against process.cwd().
+    // A GUI app launched from Explorer/Finder can inherit a read-only cwd
+    // (C:\Windows\System32, install dir, /), which breaks state persistence
+    // and can kill the process before it prints the ready line. Anchor it to
+    // the user's home directory instead.
+    let work_dir = app.path().home_dir().map_err(|e| e.to_string())?;
+
     let mut child = Command::new(node)
         .arg(script)
         .arg("web")
         .arg("--port")
         .arg("0")
+        .current_dir(work_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
