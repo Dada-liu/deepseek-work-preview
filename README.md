@@ -1,0 +1,115 @@
+# DeepSeek Work
+
+基于 **Tauri v2** 的 DeepSeek 桌面 Agent。
+
+桌面端不再实现自研 UI，而是作为 **DSH 官方 Web UI 的桌面壳**：启动时拉起本地 `dsh web` 子进程，待其就绪后把 Tauri 窗口导航到官方 Web 界面。
+
+安装包**完全自包含**：内嵌 Node.js 运行时与 `@deepseek-ai/dsh` 完整依赖树，用户机器无需预装 Node.js / pnpm 或任何项目依赖。
+
+## 技术栈
+
+- Tauri v2
+- React 18（仅用于启动加载页）
+- Vite 7
+- TypeScript 5.8
+- `@deepseek-ai/dsh` `0.1.0-rc.6`（内嵌）
+
+## 开发
+
+```bash
+# 安装依赖
+pnpm install
+
+# 准备内嵌运行环境（生成 src-tauri/runtime/，首次或 dsh 版本变化时执行）
+bash scripts/prepare-runtime.sh
+
+# 开发模式（热更新 + Tauri 窗口，debug 构建直接使用 src-tauri/runtime/）
+pnpm tauri dev
+
+# 仅前端开发服务器
+pnpm dev
+```
+
+## 构建安装包
+
+```bash
+# 先准备内嵌运行环境（约 450 MB，会打进安装包）
+bash scripts/prepare-runtime.sh
+
+pnpm tauri build
+```
+
+`prepare-runtime.sh` 在临时目录用 pnpm hoisted 模式全新安装 `@deepseek-ai/dsh`（得到无符号链接的扁平依赖树），连同系统 Node.js 单文件二进制一起复制到 `src-tauri/runtime/`，并冒烟验证 `dsh web` 能独立启动。
+
+构建产物：
+
+- `src-tauri/target/release/bundle/macos/DeepSeek Work.app`（约 458 MB）
+- `src-tauri/target/release/bundle/dmg/DeepSeek Work_0.1.0_aarch64.dmg`（约 99 MB）
+
+已复制到：
+
+- `dist-desktop/DeepSeek Work.app`
+- `dist-desktop/DeepSeek Work_0.1.0_aarch64.dmg`
+
+## 功能
+
+- **完全自包含**：内嵌 Node.js v24 与 DSH 全部依赖，无需用户预装任何环境
+- **首次启动自动解包**：把运行环境复制到 `~/Library/Application Support/com.deepseek-harness.desktop/runtime`（APFS clone 秒级完成；DSH 版本升级时自动重新解包）
+- 启动加载页为 spinner + 状态文字（「正在准备运行环境…」→「正在启动 DSH 服务…」），出错时显示错误与「重试」按钮
+- 运行环境就绪后自动拉起 `dsh web` 子进程（`--port 0` 自动分配端口）
+- 解析 stdout 中的 `dsh web: http://127.0.0.1:<port>` 就绪信号
+- 窗口自动导航到官方 DSH Web UI
+- **错误日志**：启动/运行中的错误（运行环境解包失败、DSH 启动失败、DSH 子进程 stderr 输出、DSH 异常退出）追加写入 `~/deepseek-work-preview/deepseek-work.log`（目录不存在自动创建，带时间戳）
+- 托盘驻留：关闭窗口时应用保持运行，点击托盘图标恢复
+- 托盘菜单支持「显示窗口 / 重启 DSH / 退出」
+- IPC 命令：`get_dsh_status`、`start_dsh_service`、`stop_dsh_service`、`restart_dsh_service`
+
+## 应用逻辑
+
+### 整体启动流程
+
+1. Tauri `setup` 阶段：构建托盘菜单（显示窗口 / 重启 DSH / 退出）、注册「关闭窗口即隐藏」行为，并在异步任务中执行启动序列；前端 `App.tsx` 同时通过 `invoke('start_dsh_service')` 触发同一流程——两条路径幂等，`AppState` 中的锁保证只执行一次
+2. `ensure_runtime`：检查 App 数据目录下 `runtime/dsh-version` 标记与内嵌版本是否一致；不一致（首次启动或升级）则把 `.app/Contents/Resources/runtime/` 复制到可写的 App 数据目录（优先 APFS `cp -Rc` clone，失败回退递归拷贝），随后补 node 可执行权限并移除 quarantine 属性
+3. `spawn_dsh_web`：用解包目录中的 node 拉起 `<runtime>/node_modules/@deepseek-ai/dsh/lib/bin.js web --port 0`，后台线程持续读取 stdout，解析到 `dsh web: http://127.0.0.1:<port>` 就绪信号后，将 Tauri 窗口 `navigate()` 到官方 Web UI，并向前端发出 `dsh-ready` 事件
+4. 前端收到 `dsh-ready` 后也会自行 `window.location.href` 跳转，并每 500ms 轮询 `get_dsh_status` 兜底——dev 模式下 vite 首次编译慢，页面可能错过后端发出的事件和导航，两条自愈路径保证最终一定会进入 Web UI
+
+### 启动加载页
+
+- 无进度条：spinner + 一行状态文字，由后端 `boot-status` 字符串事件驱动（「首次启动，正在准备运行环境…」「正在启动 DSH 服务…」等）
+- 页面检测不到 Tauri 运行环境时（例如在普通浏览器中打开 vite 开发地址）显示提示而非裸报错
+- 出错时收到 `dsh-error` 事件，显示错误信息与「重试」按钮，点击后调用 `restart_dsh_service`（会重新走 `ensure_runtime` + 拉起子进程）
+
+## 运行要求
+
+无。安装包自包含 Node.js 与 DSH 运行时：
+
+1. 首次启动会在 `~/Library/Application Support/com.deepseek-harness.desktop/runtime` 解包运行环境（约占用 450 MB 磁盘）。
+2. 应用未签名，首次打开需在 Finder 中右键 →「打开」。
+
+```bash
+open dist-desktop/DeepSeek\ Work.app
+```
+
+## 项目结构
+
+```
+.
+├── src/                    React 启动加载页
+│   ├── App.tsx             spinner 状态页与 DSH 事件监听
+│   ├── App.css             启动页样式
+│   └── main.tsx            入口
+├── src-tauri/              Tauri / Rust 后端
+│   ├── src/lib.rs          运行环境解包、DSH 子进程管理、托盘、IPC
+│   ├── runtime/            prepare-runtime.sh 产物（gitignore，打包进 .app）
+│   ├── tauri.conf.json     Tauri 配置（bundle.resources 引用 runtime/）
+│   └── Cargo.toml          Rust 依赖
+├── scripts/
+│   └── prepare-runtime.sh  生成自包含运行环境（Node + DSH 依赖树）
+├── dist-desktop/           已构建的安装包
+├── implement-plan.md       实施规范参考文档
+└── README.md               本文件
+```
+
+## 许可证
+
+MIT

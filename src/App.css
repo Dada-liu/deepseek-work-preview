@@ -1,0 +1,99 @@
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface-2: #21262d;
+  --border: #30363d;
+  --text: #c9d1d9;
+  --text-muted: #8b949e;
+  --accent: #58a6ff;
+  --accent-hover: #79b8ff;
+  --success: #3fb950;
+  --error: #f85149;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+  font-size: 14px;
+}
+
+.boot-screen {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at center, var(--surface-2) 0%, var(--bg) 70%);
+}
+
+.boot-card {
+  text-align: center;
+  padding: 40px 48px;
+  background: rgba(22, 27, 34, 0.85);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  max-width: 480px;
+  width: 90%;
+}
+
+.boot-card h1 {
+  margin: 0 0 24px;
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.spinner {
+  width: 32px;
+  height: 32px;
+  margin: 0 auto 16px;
+  border: 3px solid var(--surface-2);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.status-message {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  min-height: 20px;
+}
+
+.error-message {
+  margin: 12px 0 0;
+  color: var(--error);
+  font-size: 13px;
+  word-break: break-all;
+}
+
+.btn {
+  margin-top: 24px;
+  padding: 10px 20px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.btn:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
