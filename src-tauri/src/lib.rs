@@ -284,16 +284,26 @@ fn spawn_dsh_web(app: &AppHandle) -> Result<DshProcess, String> {
     // the user's home directory instead.
     let work_dir = app.path().home_dir().map_err(|e| e.to_string())?;
 
-    let mut child = Command::new(node)
-        .arg(script)
+    let mut cmd = Command::new(node);
+    cmd.arg(script)
         .arg("web")
         .arg("--port")
         .arg("0")
         .current_dir(work_dir)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("启动 DSH 失败: {}", e))?;
+        .stderr(Stdio::piped());
+
+    // node.exe is a console-subsystem executable; without CREATE_NO_WINDOW,
+    // Windows allocates a visible console window for it. stdout/stderr are
+    // piped, so the console is pure noise.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let mut child = cmd.spawn().map_err(|e| format!("启动 DSH 失败: {}", e))?;
 
     // Drain stderr so the child never blocks on a full pipe, and log every
     // line — DSH reports warnings and errors on stderr.
