@@ -67,5 +67,15 @@ jobs:
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: DeepSeek Work ${{ steps.tag.outputs.tag }}
+          body: |
+            ## 安装提示
+
+            **macOS**：应用未做 Apple 公证，下载的 dmg 安装后首次打开若提示「"DeepSeek Work"已损坏，无法打开」，在终端执行一次：
+
+            ```bash
+            xattr -cr /Applications/DeepSeek\ Work.app
+            ```
+
+            **Windows**：SmartScreen 提示时选「仍要运行」。若启动报「拒绝访问 (os error 5)」，请将安装目录或 `%APPDATA%\com.deepseek-harness.desktop` 加入杀毒软件白名单。
           generate_release_notes: true
           files: release-artifact/*

@@ -97,8 +97,8 @@ bash scripts/release.sh patch    # 先 bump 补丁版本（同步 tauri.conf.jso
 
 无。安装包自包含 Node.js 与 DSH 运行时：
 
-- **macOS**：首次启动解包运行环境到 `~/Library/Application Support/com.deepseek-harness.desktop/runtime`（约 450 MB）；应用未签名，首次打开需在 Finder 中右键 →「打开」
-- **Windows**：NSIS 安装包（`DeepSeek Work_<version>_x64-setup.exe`）；首次启动解包运行环境到 `%APPDATA%/com.deepseek-harness.desktop/runtime`；应用未签名，SmartScreen 提示时选「仍要运行」
+- **macOS**：首次启动解包运行环境到 `~/Library/Application Support/com.deepseek-harness.desktop/runtime`（约 450 MB）。应用未做 Apple 公证，从浏览器下载的 dmg 安装后首次打开可能提示「"DeepSeek Work"已损坏，无法打开」——这是 Gatekeeper 的隔离属性所致，在终端执行一次 `xattr -cr /Applications/DeepSeek\ Work.app` 后即可正常打开
+- **Windows**：NSIS 安装包（`DeepSeek Work_<version>_x64-setup.exe`）；首次启动解包运行环境到 `%APPDATA%/com.deepseek-harness.desktop/runtime`；应用未签名，SmartScreen 提示时选「仍要运行」。若启动报「拒绝访问 (os error 5)」，通常是杀毒软件拦截了内嵌的 node.exe，请将安装目录或 `%APPDATA%/com.deepseek-harness.desktop` 加入杀软白名单
 
 ```bash
 open dist-desktop/DeepSeek\ Work.app

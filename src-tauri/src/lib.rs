@@ -13,13 +13,51 @@ use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 struct DshProcess {
     child: Child,
     url: Arc<Mutex<Option<String>>>,
+    /// PID file recording this child so a later launch can clean up a stale
+    /// process that still locks the runtime directory (Windows error 5).
+    pid_path: PathBuf,
 }
 
 impl Drop for DshProcess {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        let _ = fs::remove_file(&self.pid_path);
     }
+}
+
+/// Hide the console window for a spawned helper process (Windows only).
+/// Any console-subsystem executable spawned from our GUI process gets a
+/// visible console without this.
+#[cfg(windows)]
+fn hide_console(cmd: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+/// Kill a stale DSH process recorded in `runtime/dsh.pid` from a previous
+/// session (e.g. the app was closed to the tray or crashed). Only the exact
+/// PID we recorded is touched.
+fn kill_stale_dsh(runtime: &Path) {
+    let pid_file = runtime.join("dsh.pid");
+    let Ok(pid) = fs::read_to_string(&pid_file) else { return };
+    let pid = pid.trim();
+    if pid.is_empty() {
+        return;
+    }
+    #[cfg(windows)]
+    {
+        let mut cmd = Command::new("taskkill");
+        cmd.args(["/PID", pid, "/F", "/T"]);
+        hide_console(&mut cmd);
+        let _ = cmd.status();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = Command::new("kill").arg(pid).status();
+    }
+    let _ = fs::remove_file(&pid_file);
 }
 
 /// Shared application state.
@@ -188,19 +226,44 @@ fn bundled_runtime_dir(app: &AppHandle) -> Result<PathBuf, String> {
 
 /// Recursively copy a directory tree (fallback when APFS clone copy fails).
 fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
-    fs::create_dir_all(dst).map_err(|e| e.to_string())?;
-    for entry in fs::read_dir(src).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
+    fs::create_dir_all(dst)
+        .map_err(|e| format!("创建目录失败 ({}): {}", dst.display(), e))?;
+    for entry in fs::read_dir(src).map_err(|e| format!("读取目录失败 ({}): {}", src.display(), e))? {
+        let entry = entry.map_err(|e| format!("读取目录项失败 ({}): {}", src.display(), e))?;
         let ty = entry.file_type().map_err(|e| e.to_string())?;
         let from = entry.path();
         let to = dst.join(entry.file_name());
         if ty.is_dir() {
             copy_dir_all(&from, &to)?;
         } else {
-            fs::copy(&from, &to).map_err(|e| e.to_string())?;
+            fs::copy(&from, &to).map_err(|e| {
+                format!("复制文件失败 ({} -> {}): {}", from.display(), to.display(), e)
+            })?;
         }
     }
     Ok(())
+}
+
+/// Remove a directory tree, retrying a few times — Windows briefly locks
+/// files while antivirus scanners or a just-killed process release them.
+fn remove_dir_all_retry(dir: &Path) -> Result<(), String> {
+    let mut last = String::new();
+    for attempt in 0..3 {
+        match fs::remove_dir_all(dir) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                last = e.to_string();
+                if attempt < 2 {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+            }
+        }
+    }
+    Err(format!(
+        "删除旧运行环境失败 ({}): {} — 请从托盘彻底退出 DeepSeek Work 后重试",
+        dir.display(),
+        last
+    ))
 }
 
 /// Extract the bundled runtime (Node.js + DSH) into the app data dir on
@@ -225,10 +288,14 @@ fn ensure_runtime(app: &AppHandle, state: &State<AppState>) -> Result<PathBuf, S
     if !extracted {
         status(app, "首次启动，正在准备运行环境…");
         if dir.exists() {
-            fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+            // A stale DSH from a previous session may still hold files in
+            // the runtime dir (Windows reports that as "access denied").
+            kill_stale_dsh(&dir);
+            remove_dir_all_retry(&dir)?;
         }
         if let Some(parent) = dir.parent() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("创建数据目录失败 ({}): {}", parent.display(), e))?;
         }
         // macOS: prefer APFS clonefile copy (a few seconds for ~450 MB).
         // Other platforms (and non-APFS volumes) use a plain recursive copy.
@@ -284,7 +351,7 @@ fn spawn_dsh_web(app: &AppHandle) -> Result<DshProcess, String> {
     // the user's home directory instead.
     let work_dir = app.path().home_dir().map_err(|e| e.to_string())?;
 
-    let mut cmd = Command::new(node);
+    let mut cmd = Command::new(&node);
     cmd.arg(script)
         .arg("web")
         .arg("--port")
@@ -297,13 +364,21 @@ fn spawn_dsh_web(app: &AppHandle) -> Result<DshProcess, String> {
     // Windows allocates a visible console window for it. stdout/stderr are
     // piped, so the console is pure noise.
     #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+    hide_console(&mut cmd);
 
-    let mut child = cmd.spawn().map_err(|e| format!("启动 DSH 失败: {}", e))?;
+    let mut child = cmd.spawn().map_err(|e| {
+        let hint = if cfg!(windows) && e.raw_os_error() == Some(5) {
+            " — 可能被安全软件拦截，请将应用加入杀毒软件白名单后重试"
+        } else {
+            ""
+        };
+        format!("启动 DSH 失败 ({}): {}{}", node.display(), e, hint)
+    })?;
+
+    // Record the PID so a later launch can clean up if this child outlives
+    // the app (window closed to tray, crash, forced update).
+    let pid_path = runtime.join("dsh.pid");
+    let _ = fs::write(&pid_path, child.id().to_string());
 
     // Drain stderr so the child never blocks on a full pipe, and log every
     // line — DSH reports warnings and errors on stderr.
@@ -352,7 +427,7 @@ fn spawn_dsh_web(app: &AppHandle) -> Result<DshProcess, String> {
         }
     });
 
-    Ok(DshProcess { child, url })
+    Ok(DshProcess { child, url, pid_path })
 }
 
 pub fn run() {
