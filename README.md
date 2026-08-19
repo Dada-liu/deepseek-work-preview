@@ -1,10 +1,21 @@
+<div align="center">
+
 # DeepSeek Work
+<img src="./public/favicon.svg" style="width: 40px; height: 40px;"/>
 
 基于 **Tauri v2** 的 DeepSeek 桌面 Agent。
 
 桌面端作为 **DSH 官方 Web UI 的桌面壳**：启动时拉起本地 `dsh web` 子进程，待其就绪后把 Tauri 窗口导航到官方 Web 界面。
 
 安装包**完全自包含**：内嵌 Node.js 运行时与 `@deepseek-ai/dsh` 完整依赖树，用户机器无需预装 Node.js / pnpm 或任何项目依赖。
+
+
+查看项目和下载：https://www.hotpotliuyu.com/ds-work/
+
+<img src="./public/ds_work_website.png" style="width: 80%;"/>
+
+</div>
+
 
 ## 技术栈
 
