@@ -334,7 +334,98 @@ fn ensure_runtime(app: &AppHandle, state: &State<AppState>) -> Result<PathBuf, S
     Ok(dir)
 }
 
+/// The preinstalled dsh-market plugin (npm package name).
+const DSH_MARKET_PACKAGE: &str = "dshmarket";
+/// The bundle list dsh's own initProfile writes for a fresh web profile.
+const WEB_PROFILE_DEFAULT_BUNDLES: [&str; 2] =
+    ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"];
+/// The empty user patch layer dsh writes on profile init (PROFILE_PATCH_TEMPLATE).
+const PROFILE_PATCH_TEMPLATE: &str = "# Your patch layer for this dsh profile, applied after every bundle layer:\n# a top-level YAML array of loader patch entries (id-targeted config\n# overrides, disables, and insert lists; `!!js` expressions allowed).\n[]\n";
+/// The pnpm settings dsh writes on profile init (PROFILE_PNPM_WORKSPACE),
+/// needed so the market's own one-click installs behave the same here.
+const PROFILE_PNPM_WORKSPACE: &str =
+    "packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n";
+
+/// Seed the preinstalled dsh-market plugin into the web profile.
+///
+/// The plugin package ships inside the bundled runtime (registered in the
+/// bundled dsh copy's dependency closure, so dsh's boot-time module fallback
+/// links it into `$DSH_HOME/profiles/node_modules`); what remains here is
+/// listing it in the profile's `dsh.profile.bundles`. Only a fresh profile
+/// or an untouched default manifest is modified — a bundles list the user
+/// has customized (or deliberately removed the market from) is left alone.
+fn seed_dsh_market(app: &AppHandle) -> Result<(), String> {
+    let home = app.path().home_dir().map_err(|e| e.to_string())?;
+    // Mirror dsh's home resolution ($DSH_HOME, then ~/.dsh).
+    let dsh_home = std::env::var_os("DSH_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".dsh"));
+    let dir = dsh_home.join("profiles").join("web");
+    let manifest_path = dir.join("package.json");
+
+    if !manifest_path.exists() {
+        fs::create_dir_all(&dir)
+            .map_err(|e| format!("创建 profile 目录失败 ({}): {}", dir.display(), e))?;
+        let manifest = serde_json::json!({
+            "name": "dsh-profile-web",
+            "private": true,
+            "dependencies": {},
+            "dsh": { "profile": { "bundles": [
+                WEB_PROFILE_DEFAULT_BUNDLES[0],
+                WEB_PROFILE_DEFAULT_BUNDLES[1],
+                DSH_MARKET_PACKAGE,
+            ] } }
+        });
+        fs::write(
+            &manifest_path,
+            serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())? + "\n",
+        )
+        .map_err(|e| format!("写入 profile manifest 失败: {}", e))?;
+        fs::write(dir.join("cordis.patch.yml"), PROFILE_PATCH_TEMPLATE)
+            .map_err(|e| format!("写入 cordis.patch.yml 失败: {}", e))?;
+        fs::write(dir.join("pnpm-workspace.yaml"), PROFILE_PNPM_WORKSPACE)
+            .map_err(|e| format!("写入 pnpm-workspace.yaml 失败: {}", e))?;
+        return Ok(());
+    }
+
+    let text = fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("读取 profile manifest 失败: {}", e))?;
+    let mut manifest: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("解析 profile manifest 失败: {}", e))?;
+    let is_untouched_default = manifest
+        .pointer("/dsh/profile/bundles")
+        .and_then(|v| v.as_array())
+        .map(|b| {
+            b.len() == WEB_PROFILE_DEFAULT_BUNDLES.len()
+                && b.iter()
+                    .zip(WEB_PROFILE_DEFAULT_BUNDLES.iter())
+                    .all(|(v, name)| v.as_str() == Some(name))
+        })
+        .unwrap_or(false);
+    if is_untouched_default {
+        if let Some(bundles) = manifest
+            .pointer_mut("/dsh/profile/bundles")
+            .and_then(|v| v.as_array_mut())
+        {
+            bundles.push(serde_json::Value::String(DSH_MARKET_PACKAGE.to_string()));
+            fs::write(
+                &manifest_path,
+                serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())? + "\n",
+            )
+            .map_err(|e| format!("写入 profile manifest 失败: {}", e))?;
+        }
+    }
+    Ok(())
+}
+
 fn spawn_dsh_web(app: &AppHandle) -> Result<DshProcess, String> {
+    // Preinstall the plugin market into the web profile. Optional: a failure
+    // here must never block DSH from starting.
+    if let Err(e) = seed_dsh_market(app) {
+        log_error(app, &format!("预装 dsh-market 失败: {}", e));
+    }
+
     let runtime = runtime_dir(app)?;
     let node = runtime.join(node_bin_name());
     let script = runtime.join("node_modules/@deepseek-ai/dsh/lib/bin.js");
@@ -352,8 +443,11 @@ fn spawn_dsh_web(app: &AppHandle) -> Result<DshProcess, String> {
     let work_dir = app.path().home_dir().map_err(|e| e.to_string())?;
 
     let mut cmd = Command::new(&node);
+    // --no-open: dsh web otherwise hands the URL to the system's default
+    // browser; the desktop app navigates its own window instead.
     cmd.arg(script)
         .arg("web")
+        .arg("--no-open")
         .arg("--port")
         .arg("0")
         .current_dir(work_dir)
@@ -430,9 +524,71 @@ fn spawn_dsh_web(app: &AppHandle) -> Result<DshProcess, String> {
     Ok(DshProcess { child, url, pid_path })
 }
 
+/// Raw plugin-market allowlist (JSON with an `allow` array), embedded at
+/// compile time. An empty `allow` disables the filter entirely.
+const MARKET_ALLOWLIST_JSON: &str = include_str!("../market-plugin-allowlist.json");
+
+/// Build the webview init script that hides non-whitelisted plugins from the
+/// dsh-market settings section. The market UI loads its catalog via
+/// `fetch("/dsh-market/registry")`; wrapping `window.fetch` lets us filter
+/// `data.registry.plugins` purely at the presentation layer — the market
+/// package and the DSH server (including its install endpoint) stay
+/// untouched. Any failure degrades to showing the full catalog. Returns None
+/// when the allowlist is empty or unparseable.
+fn market_filter_script() -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(MARKET_ALLOWLIST_JSON).ok()?;
+    let names: Vec<&str> = value
+        .get("allow")?
+        .as_array()?
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    let names_json = serde_json::to_string(&names).ok()?;
+    Some(format!(
+        r#"(() => {{
+  if (window.__dswMarketFilter) return;
+  window.__dswMarketFilter = true;
+  const ALLOW = new Set({names_json});
+  const orig = window.fetch.bind(window);
+  window.fetch = async (...args) => {{
+    const res = await orig(...args);
+    try {{
+      const input = args[0];
+      const url = typeof input === 'string' ? input : (input && input.url) || '';
+      if (!url.includes('/dsh-market/registry')) return res;
+      const data = await res.clone().json();
+      const plugins = data && data.registry && data.registry.plugins;
+      if (!Array.isArray(plugins)) return res;
+      data.registry.plugins = plugins.filter((p) => p && (ALLOW.has(p.name) || ALLOW.has(p.npm)));
+      return new Response(JSON.stringify(data), {{
+        status: res.status,
+        statusText: res.statusText,
+        headers: {{ 'content-type': 'application/json' }},
+      }});
+    }} catch (_) {{
+      return res;
+    }}
+  }};
+}})();"#
+    ))
+}
+
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState::default())
+        // Re-inject on every page load: the window first loads the local
+        // shell, then navigates to the DSH web UI (a fresh page load).
+        .on_page_load(|window, payload| {
+            if payload.event() != tauri::webview::PageLoadEvent::Finished {
+                return;
+            }
+            if let Some(script) = market_filter_script() {
+                let _ = window.eval(&script);
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             get_dsh_status,
             start_dsh_service,
