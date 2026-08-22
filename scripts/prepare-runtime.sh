@@ -94,13 +94,15 @@ cp -RL "$STAGE/node_modules/." "$RUNTIME/node_modules/"
 # could not resolve the plugin module from the profile directory. Register
 # it as a runtime dependency of the bundled dsh copy so the farm links it.
 echo "==> Registering dshmarket in the bundled dsh dependency closure"
-node -e "
+# Same Windows caveat as above: run node from $ROOT with a relative path,
+# native node.exe cannot open the POSIX $RUNTIME path under Git Bash.
+(cd "$ROOT" && node -e "
   const fs = require('fs');
-  const f = '$RUNTIME/node_modules/@deepseek-ai/dsh/package.json';
+  const f = 'src-tauri/runtime/node_modules/@deepseek-ai/dsh/package.json';
   const pkg = JSON.parse(fs.readFileSync(f, 'utf8'));
   pkg.dependencies = { ...pkg.dependencies, dshmarket: '$DSH_MARKET_VERSION' };
   fs.writeFileSync(f, JSON.stringify(pkg, null, 2) + '\n');
-"
+")
 [ -f "$RUNTIME/node_modules/dshmarket/cordis.patch.yml" ] || {
   echo "error: dshmarket bundle patch missing from the runtime tree" >&2
   exit 1
