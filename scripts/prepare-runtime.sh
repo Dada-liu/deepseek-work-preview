@@ -60,25 +60,29 @@ trap 'rm -rf "$STAGE"' EXIT
 # sub-packages float to newer rc builds than the tested set in the project's
 # pnpm-lock.yaml (e.g. rc.8 needs Node APIs our bundled Node lacks). Pin
 # every @deepseek-ai/* package to its locked version via pnpm overrides.
-node -e "
-  const fs = require('fs');
-  const lock = fs.readFileSync('$ROOT/pnpm-lock.yaml', 'utf8');
-  const overrides = {};
-  for (const m of lock.matchAll(/'(@deepseek-ai\/[^'@]+)@([0-9][^'(]*)'/g))
-    overrides[m[1]] = m[2];
-  const manifest = {
-    name: 'dsh-runtime-stage',
-    private: true,
-    dependencies: {
-      '@deepseek-ai/dsh': '$DSH_VERSION',
-      dshmarket: '$DSH_MARKET_VERSION',
-    },
-    pnpm: { overrides },
-  };
-  fs.writeFileSync('$STAGE/package.json', JSON.stringify(manifest, null, 2) + '\n');
-"
+# Overrides go into the staging pnpm-workspace.yaml: pnpm 11 no longer reads
+# the package.json "pnpm" field. node.exe on Windows (Git Bash on CI) cannot
+# open POSIX paths, so read the lockfile relative to $ROOT and hand node a
+# native staging path.
+STAGE_NATIVE="$STAGE"
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) STAGE_NATIVE="$(cygpath -w "$STAGE")" ;;
+esac
+cat > "$STAGE/package.json" <<EOF
+{"name":"dsh-runtime-stage","private":true,"dependencies":{"@deepseek-ai/dsh":"$DSH_VERSION","dshmarket":"$DSH_MARKET_VERSION"}}
+EOF
 # Reuse the project's build-approval / release-age settings.
 cp "$ROOT/pnpm-workspace.yaml" "$STAGE/pnpm-workspace.yaml"
+(cd "$ROOT" && STAGE_NATIVE="$STAGE_NATIVE" node -e "
+  const fs = require('fs');
+  const lock = fs.readFileSync('pnpm-lock.yaml', 'utf8');
+  const seen = new Map();
+  for (const m of lock.matchAll(/'(@deepseek-ai\/[^'@]+)@([0-9][^'(]*)'/g))
+    seen.set(m[1], m[2]);
+  let out = '\noverrides:\n';
+  for (const [k, v] of seen) out += '  ' + JSON.stringify(k) + ': ' + JSON.stringify(v) + '\n';
+  fs.appendFileSync(process.env.STAGE_NATIVE + '/pnpm-workspace.yaml', out);
+")
 pnpm -C "$STAGE" install --prod --node-linker=hoisted --no-lockfile
 
 echo "==> Copying runtime tree (dereferencing any remaining symlinks)"
