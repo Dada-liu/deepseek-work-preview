@@ -11,6 +11,12 @@ DSH_SRC="$ROOT/node_modules/@deepseek-ai/dsh"
 # Bundled into the runtime and seeded into the web profile on first launch
 # (see seed_dsh_market in src-tauri/src/lib.rs).
 DSH_MARKET_VERSION="1.18.0"
+# Package managers bundled next to the Node binary. The market plugin's
+# one-click installs shell out to pnpm/npm and look for them in the Node
+# binary's own directory (dshmarket dsh-cli.js nodeBinDir), so shims are
+# placed beside $NODE_BIN — machines without any Node toolchain still work.
+NPM_VERSION="11.17.0"
+PNPM_VERSION="11.21.0"
 
 echo "==> Cleaning $RUNTIME"
 rm -rf "$RUNTIME"
@@ -53,7 +59,7 @@ DSH_VERSION="$(cd "$ROOT" && node -p "require('./node_modules/@deepseek-ai/dsh/p
   echo "error: $DSH_SRC missing, run pnpm install first" >&2
   exit 1
 }
-echo "==> Installing @deepseek-ai/dsh@$DSH_VERSION + dshmarket@$DSH_MARKET_VERSION into staging dir (hoisted)"
+echo "==> Installing @deepseek-ai/dsh@$DSH_VERSION + dshmarket@$DSH_MARKET_VERSION + npm@$NPM_VERSION + pnpm@$PNPM_VERSION into staging dir (hoisted)"
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 # The staging install runs without a lockfile, so ^-ranged @deepseek-ai/*
@@ -69,7 +75,7 @@ case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*) STAGE_NATIVE="$(cygpath -w "$STAGE")" ;;
 esac
 cat > "$STAGE/package.json" <<EOF
-{"name":"dsh-runtime-stage","private":true,"dependencies":{"@deepseek-ai/dsh":"$DSH_VERSION","dshmarket":"$DSH_MARKET_VERSION"}}
+{"name":"dsh-runtime-stage","private":true,"dependencies":{"@deepseek-ai/dsh":"$DSH_VERSION","dshmarket":"$DSH_MARKET_VERSION","npm":"$NPM_VERSION","pnpm":"$PNPM_VERSION"}}
 EOF
 # Reuse the project's build-approval / release-age settings.
 cp "$ROOT/pnpm-workspace.yaml" "$STAGE/pnpm-workspace.yaml"
@@ -108,17 +114,60 @@ echo "==> Registering dshmarket in the bundled dsh dependency closure"
   exit 1
 }
 
+# npm/pnpm launchers placed NEXT TO the Node binary. dshmarket spawns
+# `pnpm`/`npm` bare and prepends the Node executable's own directory
+# (nodeBinDir in dshmarket's dsh-cli.js) to the child PATH, so shims here
+# are found even on machines with no Node toolchain installed at all.
+echo "==> Creating npm/pnpm shims alongside the Node binary"
+[ -f "$RUNTIME/node_modules/npm/bin/npm-cli.js" ] || {
+  echo "error: npm package missing from the runtime tree" >&2
+  exit 1
+}
+[ -f "$RUNTIME/node_modules/pnpm/bin/pnpm.cjs" ] || {
+  echo "error: pnpm package missing from the runtime tree" >&2
+  exit 1
+}
+write_unix_shim() {
+  cat > "$RUNTIME/$1" <<EOF
+#!/bin/sh
+# Bundled $1 launcher: runs the $1 copy in runtime/node_modules with the
+# bundled Node, so no system Node/npm/pnpm is required.
+DIR="\$(cd "\$(dirname "\$0")" && pwd)"
+exec "\$DIR/$NODE_BIN" "\$DIR/node_modules/$2" "\$@"
+EOF
+  chmod +x "$RUNTIME/$1"
+}
+write_unix_shim npm "npm/bin/npm-cli.js"
+write_unix_shim pnpm "pnpm/bin/pnpm.cjs"
+# Windows .cmd shims, written on every platform so a single runtime tree
+# works for both bundles; cmd.exe wants CRLF line endings. The Windows Node
+# binary is always node.exe regardless of the build host's NODE_BIN.
+printf '@echo off\r\n"%%~dp0node.exe" "%%~dp0node_modules\\npm\\bin\\npm-cli.js" %%*\r\n' > "$RUNTIME/npm.cmd"
+printf '@echo off\r\n"%%~dp0node.exe" "%%~dp0node_modules\\pnpm\\bin\\pnpm.cjs" %%*\r\n' > "$RUNTIME/pnpm.cmd"
+
 # The marker doubles as a cache-invalidation key in the desktop app
 # (ensure_runtime in src-tauri/src/lib.rs re-extracts when it changes), so it
 # must cover everything baked into the runtime — including the preinstalled
-# plugin set, not just the dsh version.
-echo "$DSH_VERSION+dshmarket-$DSH_MARKET_VERSION" > "$RUNTIME/dsh-version"
+# plugin set and the bundled package managers, not just the dsh version.
+echo "$DSH_VERSION+dshmarket-$DSH_MARKET_VERSION+npm-$NPM_VERSION+pnpm-$PNPM_VERSION" > "$RUNTIME/dsh-version"
 echo "==> DSH version: $DSH_VERSION"
 du -sh "$RUNTIME"
 
 # 3. Smoke test: the copied runtime must boot standalone, with the web
 #    profile seeded to load the preinstalled dshmarket bundle (same shape
 #    that seed_dsh_market in src-tauri/src/lib.rs writes on first launch).
+echo "==> Smoke-testing bundled npm/pnpm shims"
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    "$RUNTIME/$NODE_BIN" "$RUNTIME/node_modules/npm/bin/npm-cli.js" --version
+    "$RUNTIME/$NODE_BIN" "$RUNTIME/node_modules/pnpm/bin/pnpm.cjs" --version
+    ;;
+  *)
+    "$RUNTIME/npm" --version
+    "$RUNTIME/pnpm" --version
+    ;;
+esac
+
 echo "==> Smoke-testing runtime"
 LOG="$(mktemp)"
 SMOKE_HOME="$(mktemp -d)"

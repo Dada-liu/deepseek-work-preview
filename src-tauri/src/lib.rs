@@ -321,6 +321,12 @@ fn ensure_runtime(app: &AppHandle, state: &State<AppState>) -> Result<PathBuf, S
                 dir.join(node_bin_name()),
                 fs::Permissions::from_mode(0o755),
             );
+            // The bundled npm/pnpm launchers sit next to the Node binary and
+            // are spawned bare by dsh-market, so they need the exec bit too
+            // (a plain recursive copy does not preserve it).
+            for shim in ["npm", "pnpm"] {
+                let _ = fs::set_permissions(dir.join(shim), fs::Permissions::from_mode(0o755));
+            }
         }
         #[cfg(target_os = "macos")]
         let _ = Command::new("xattr")
@@ -524,34 +530,30 @@ fn spawn_dsh_web(app: &AppHandle) -> Result<DshProcess, String> {
     Ok(DshProcess { child, url, pid_path })
 }
 
-/// Raw plugin-market allowlist (JSON with an `allow` array), embedded at
-/// compile time. An empty `allow` disables the filter entirely.
-const MARKET_ALLOWLIST_JSON: &str = include_str!("../market-plugin-allowlist.json");
-
-/// Build the webview init script that hides non-whitelisted plugins from the
-/// dsh-market settings section. The market UI loads its catalog via
+/// Webview script that hides non-whitelisted plugins from the dsh-market
+/// settings section. The market UI loads its catalog via
 /// `fetch("/dsh-market/registry")`; wrapping `window.fetch` lets us filter
 /// `data.registry.plugins` purely at the presentation layer — the market
 /// package and the DSH server (including its install endpoint) stay
-/// untouched. Any failure degrades to showing the full catalog. Returns None
-/// when the allowlist is empty or unparseable.
-fn market_filter_script() -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(MARKET_ALLOWLIST_JSON).ok()?;
-    let names: Vec<&str> = value
-        .get("allow")?
-        .as_array()?
-        .iter()
-        .filter_map(|v| v.as_str())
-        .collect();
-    if names.is_empty() {
-        return None;
-    }
-    let names_json = serde_json::to_string(&names).ok()?;
-    Some(format!(
+/// untouched.
+///
+/// The allowlist itself is NOT bundled: it is fetched once per page load from
+/// a designated GitHub repo (raw URL, CORS `*`). That repo's plugins.json is
+/// an audit index — `plugins[]` entries keyed by `name` ("owner/repo") with a
+/// `verdict` of whitelist / greylist / blacklist / pending; only `whitelist`
+/// entries may be shown. Market registry entries join on `owner + "/" + name`.
+/// The set starts empty, and an empty set hides everything — so while the
+/// config is unreachable (offline, malformed JSON) the market shows nothing.
+const MARKET_ALLOWLIST_URL: &str =
+    "https://raw.githubusercontent.com/hotpot-labs/awesome-dsh-industry-plugins/main/plugins.json";
+
+fn market_filter_script() -> String {
+    format!(
         r#"(() => {{
   if (window.__dswMarketFilter) return;
   window.__dswMarketFilter = true;
-  const ALLOW = new Set({names_json});
+  const ALLOW = new Set();
+  window.__dswMarketAllow = ALLOW;
   const orig = window.fetch.bind(window);
   window.fetch = async (...args) => {{
     const res = await orig(...args);
@@ -562,7 +564,7 @@ fn market_filter_script() -> Option<String> {
       const data = await res.clone().json();
       const plugins = data && data.registry && data.registry.plugins;
       if (!Array.isArray(plugins)) return res;
-      data.registry.plugins = plugins.filter((p) => p && (ALLOW.has(p.name) || ALLOW.has(p.npm)));
+      data.registry.plugins = plugins.filter((p) => p && ALLOW.has(p.owner + '/' + p.name));
       return new Response(JSON.stringify(data), {{
         status: res.status,
         statusText: res.statusText,
@@ -572,8 +574,17 @@ fn market_filter_script() -> Option<String> {
       return res;
     }}
   }};
-}})();"#
-    ))
+  orig({url:?}, {{ cache: 'no-cache' }})
+    .then((r) => (r.ok ? r.json() : null))
+    .then((cfg) => {{
+      const list = cfg && Array.isArray(cfg.plugins) ? cfg.plugins : [];
+      for (const e of list)
+        if (e && e.verdict === 'whitelist' && typeof e.name === 'string' && e.name) ALLOW.add(e.name);
+    }})
+    .catch(() => {{}});
+}})();"#,
+        url = MARKET_ALLOWLIST_URL
+    )
 }
 
 pub fn run() {
@@ -585,9 +596,7 @@ pub fn run() {
             if payload.event() != tauri::webview::PageLoadEvent::Finished {
                 return;
             }
-            if let Some(script) = market_filter_script() {
-                let _ = window.eval(&script);
-            }
+            let _ = window.eval(&market_filter_script());
         })
         .invoke_handler(tauri::generate_handler![
             get_dsh_status,
