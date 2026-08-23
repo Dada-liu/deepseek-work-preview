@@ -13,6 +13,7 @@
 
 安装包**完全自包含**：内嵌 Node.js 运行时与 `@deepseek-ai/dsh` 完整依赖树，用户机器无需预装 Node.js / pnpm 或任何项目依赖。
 
+增加插件市场，具体插件目录见：https://github.com/hotpot-labs/awesome-dsh-industry-plugins；
 
 查看项目和下载：https://www.hotpotliuyu.com/ds-work/
 
