@@ -36,6 +36,24 @@ fn hide_console(cmd: &mut Command) {
     cmd.creation_flags(CREATE_NO_WINDOW);
 }
 
+/// Windows-only hint for an ERROR_ACCESS_DENIED (5). The two usual causes are
+/// antivirus holding the freshly-extracted runtime, and a leftover node.exe
+/// from a previous session still locking its image — neither reads well as a
+/// bare "os error 5".
+#[cfg(windows)]
+fn access_denied_hint(e: &std::io::Error) -> &'static str {
+    if e.raw_os_error() == Some(5) {
+        "；通常是杀软拦截，或上一个 DSH 进程(node.exe)仍残留占用——请将安装目录与 %APPDATA%/com.deepseek-harness.desktop 加入杀软白名单，并在任务管理器中结束残留的 node.exe"
+    } else {
+        ""
+    }
+}
+
+#[cfg(not(windows))]
+fn access_denied_hint(_e: &std::io::Error) -> &'static str {
+    ""
+}
+
 /// Kill a stale DSH process recorded in `runtime/dsh.pid` from a previous
 /// session (e.g. the app was closed to the tray or crashed). Only the exact
 /// PID we recorded is touched.
@@ -57,6 +75,9 @@ fn kill_stale_dsh(runtime: &Path) {
     {
         let _ = Command::new("kill").arg(pid).status();
     }
+    // Give the OS a moment to release the file locks held by the now-dead
+    // process image (Windows locks a running exe and its loaded DLLs).
+    std::thread::sleep(std::time::Duration::from_secs(1));
     let _ = fs::remove_file(&pid_file);
 }
 
@@ -227,7 +248,7 @@ fn bundled_runtime_dir(app: &AppHandle) -> Result<PathBuf, String> {
 /// Recursively copy a directory tree (fallback when APFS clone copy fails).
 fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
     fs::create_dir_all(dst)
-        .map_err(|e| format!("创建目录失败 ({}): {}", dst.display(), e))?;
+        .map_err(|e| format!("创建目录失败 ({}): {}{}", dst.display(), e, access_denied_hint(&e)))?;
     for entry in fs::read_dir(src).map_err(|e| format!("读取目录失败 ({}): {}", src.display(), e))? {
         let entry = entry.map_err(|e| format!("读取目录项失败 ({}): {}", src.display(), e))?;
         let ty = entry.file_type().map_err(|e| e.to_string())?;
@@ -237,7 +258,7 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
             copy_dir_all(&from, &to)?;
         } else {
             fs::copy(&from, &to).map_err(|e| {
-                format!("复制文件失败 ({} -> {}): {}", from.display(), to.display(), e)
+                format!("复制文件失败 ({} -> {}): {}{}", from.display(), to.display(), e, access_denied_hint(&e))
             })?;
         }
     }
@@ -247,22 +268,27 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
 /// Remove a directory tree, retrying a few times — Windows briefly locks
 /// files while antivirus scanners or a just-killed process release them.
 fn remove_dir_all_retry(dir: &Path) -> Result<(), String> {
-    let mut last = String::new();
-    for attempt in 0..3 {
+    // Antivirus scanning the ~450 MB runtime, or a leftover node.exe still
+    // releasing its file locks, can hold the directory for seconds — retry
+    // long enough to ride both out before giving up.
+    let mut last_err: Option<std::io::Error> = None;
+    for attempt in 0..10 {
         match fs::remove_dir_all(dir) {
             Ok(()) => return Ok(()),
             Err(e) => {
-                last = e.to_string();
-                if attempt < 2 {
+                last_err = Some(e);
+                if attempt < 9 {
                     std::thread::sleep(std::time::Duration::from_secs(1));
                 }
             }
         }
     }
+    let e = last_err.expect("retry loop runs at least once");
     Err(format!(
-        "删除旧运行环境失败 ({}): {} — 请从托盘彻底退出 DeepSeek Work 后重试",
+        "删除旧运行环境失败 ({}): {} — 请从托盘彻底退出 DeepSeek Work 后重试{}",
         dir.display(),
-        last
+        e,
+        access_denied_hint(&e),
     ))
 }
 
@@ -467,12 +493,7 @@ fn spawn_dsh_web(app: &AppHandle) -> Result<DshProcess, String> {
     hide_console(&mut cmd);
 
     let mut child = cmd.spawn().map_err(|e| {
-        let hint = if cfg!(windows) && e.raw_os_error() == Some(5) {
-            " — 可能被安全软件拦截，请将应用加入杀毒软件白名单后重试"
-        } else {
-            ""
-        };
-        format!("启动 DSH 失败 ({}): {}{}", node.display(), e, hint)
+        format!("启动 DSH 失败 ({}): {}{}", node.display(), e, access_denied_hint(&e))
     })?;
 
     // Record the PID so a later launch can clean up if this child outlives
@@ -624,6 +645,12 @@ pub fn run() {
                 .menu(&menu)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "quit" => {
+                        // Synchronously kill the DSH child before exiting:
+                        // `app.exit` skips Drop, so without this node.exe is
+                        // orphaned and locks the runtime dir on next launch.
+                        if let Ok(mut guard) = app.state::<AppState>().dsh.lock() {
+                            guard.take();
+                        }
                         app.exit(0);
                     }
                     "show" => {
