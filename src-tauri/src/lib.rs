@@ -123,6 +123,14 @@ fn log_error(app: &AppHandle, msg: &str) {
     }
 }
 
+/// Append an error reported by the injected webview filter script to the log
+/// file. The script runs inside the DSH Web UI page, where it cannot touch the
+/// filesystem directly, so it forwards messages here over IPC.
+#[tauri::command]
+fn log_frontend_error(app: AppHandle, msg: String) {
+    log_error(&app, &format!("市场过滤脚本: {}", msg));
+}
+
 /// Report the DSH subprocess state.
 #[tauri::command]
 fn get_dsh_status(state: State<'_, AppState>) -> DshStatus {
@@ -559,52 +567,118 @@ fn spawn_dsh_web(app: &AppHandle) -> Result<DshProcess, String> {
 /// untouched.
 ///
 /// The allowlist itself is NOT bundled: it is fetched once per page load from
-/// a designated GitHub repo (raw URL, CORS `*`). That repo's plugins.json is
-/// an audit index — `plugins[]` entries keyed by `name` ("owner/repo") with a
-/// `verdict` of whitelist / greylist / blacklist / pending; only `whitelist`
-/// entries may be shown. Market registry entries join on `owner + "/" + name`.
-/// The set starts empty, and an empty set hides everything — so while the
-/// config is unreachable (offline, malformed JSON) the market shows nothing.
-const MARKET_ALLOWLIST_URL: &str =
-    "https://raw.githubusercontent.com/hotpot-labs/awesome-dsh-industry-plugins/main/plugins.json";
+/// a designated GitHub repo. That repo's plugins.json is an audit index —
+/// `plugins[]` entries keyed by `name` ("owner/repo") with a `verdict` of
+/// whitelist / greylist / blacklist / pending; only `whitelist` entries may be
+/// shown. Market registry entries join on `owner + "/" + name`. The set starts
+/// empty, and an empty set hides everything — so while the config is
+/// unreachable (offline, malformed JSON) the market shows nothing.
+///
+/// The canonical source is the GitHub raw URL, but that host is unreachable
+/// from some networks (mainland China), so a jsDelivr mirror of the same repo
+/// is tried as a fallback. See [`MARKET_ALLOWLIST_URLS`].
+const MARKET_ALLOWLIST_URLS: [&str; 2] = [
+    "https://raw.githubusercontent.com/hotpot-labs/awesome-dsh-industry-plugins/main/plugins.json",
+    "https://cdn.jsdelivr.net/gh/hotpot-labs/awesome-dsh-industry-plugins@main/plugins.json",
+];
 
+/// Per-source fetch timeout (ms). A dead source (e.g. a host that blackholes
+/// packets instead of failing fast) is aborted after this long so the next
+/// source is tried and the market does not stall indefinitely.
+const ALLOWLIST_FETCH_TIMEOUT_MS: u64 = 8000;
+
+/// 生成注入到 DSH 市场页面的白名单过滤脚本。
+///
+/// 脚本包装 `window.fetch`，拦截市场的目录请求 `/dsh-market/registry`，把响应
+/// 中的 `data.registry.plugins` 过滤为仅白名单内的插件后返回新的 `Response`。
+/// 过滤只作用于表现层，市场包与 DSH 服务端（含安装接口）均不受影响。
+///
+/// 白名单不内置于安装包：每次页面加载依次尝试 `MARKET_ALLOWLIST_URLS` 中的源，
+/// 第一个可达且合法的生效（raw 被墙时回退 jsDelivr 镜像），每个源带超时。该
+/// 文件是审计索引，`plugins[]` 每项以 `name`（`owner/repo` 或 `owner/repo#子路径`）
+/// 为键、带 `verdict`（whitelist / greylist / blacklist / pending），仅
+/// `verdict === 'whitelist'` 且 `name` 非空的条目加入允许集合。
+///
+/// 匹配规则是**大小写敏感**的精确比对：市场 registry 条目按 `owner + "/" +
+/// name` 拼接后与允许集合逐字符比对。允许集合初始为空、空集合隐藏全部插件
+/// （fail-closed），因此白名单不可达（离线、JSON 解析失败）时市场展示为空。
 fn market_filter_script() -> String {
+    let urls_js = MARKET_ALLOWLIST_URLS
+        .iter()
+        .map(|u| format!("\"{}\"", u))
+        .collect::<Vec<_>>()
+        .join(", ");
     format!(
         r#"(() => {{
+  // 幂等保护：同一页面只注入一次，避免重复包装 fetch
   if (window.__dswMarketFilter) return;
   window.__dswMarketFilter = true;
-  const ALLOW = new Set();
+  const ALLOW = new Set();  // 白名单集合，name 为 owner/repo 或 owner/repo#子路径
   window.__dswMarketAllow = ALLOW;
   const orig = window.fetch.bind(window);
+  // 把错误转发给 Rust 写日志（注入脚本运行在 DSH 页面，无法直接写文件）
+  const logErr = (err) => {{
+    try {{
+      const msg = err instanceof Error ? (err.message || String(err)) : String(err);
+      const g = window.__TAURI__;
+      if (g && g.core && typeof g.core.invoke === 'function') return void g.core.invoke('log_frontend_error', {{ msg: msg }});
+      const i = window.__TAURI_INTERNALS__;
+      if (i && typeof i.invoke === 'function') void i.invoke('log_frontend_error', {{ msg: msg }});
+    }} catch (_) {{}}
+  }};
+  // 依次尝试多个白名单源，第一个可达且合法的生效；每个源带超时，被墙的源不会拖死市场
+  const ALLOW_URLS = [{urls}];
+  const fetchJson = (u, ms) => {{
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), ms);
+    return orig(u, {{ cache: 'no-cache', signal: ctrl.signal }})
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
+      .finally(() => clearTimeout(timer));
+  }};
+  let allowReady = null;  // 白名单加载完成的 Promise（成功或全部失败都会 resolve）
+  const loadAllowlist = () => {{
+    if (allowReady) return allowReady;
+    allowReady = (async () => {{
+      for (const u of ALLOW_URLS) {{
+        try {{
+          const cfg = await fetchJson(u, {timeout_ms});
+          const list = cfg && Array.isArray(cfg.plugins) ? cfg.plugins : [];
+          for (const e of list)
+            if (e && e.verdict === 'whitelist' && typeof e.name === 'string' && e.name) ALLOW.add(e.name);
+          return;  // 该源加载成功，结束尝试
+        }} catch (err) {{ logErr(err); }}  // 该源失败，尝试下一个
+      }}
+    }})();
+    return allowReady;
+  }};
+  loadAllowlist();  // 页面加载即开始拉取，与市场首次渲染并行
   window.fetch = async (...args) => {{
     const res = await orig(...args);
     try {{
       const input = args[0];
       const url = typeof input === 'string' ? input : (input && input.url) || '';
+      // 仅拦截市场目录请求，其余请求原样放行
       if (!url.includes('/dsh-market/registry')) return res;
       const data = await res.clone().json();
       const plugins = data && data.registry && data.registry.plugins;
       if (!Array.isArray(plugins)) return res;
+      // 等白名单加载完成再过滤，避免与市场的 registry 请求竞态、误判白名单为空
+      try {{ await allowReady; }} catch (_) {{}}
+      // 大小写敏感的精确匹配：owner + '/' + name 逐字符命中白名单才展示
       data.registry.plugins = plugins.filter((p) => p && ALLOW.has(p.owner + '/' + p.name));
       return new Response(JSON.stringify(data), {{
         status: res.status,
         statusText: res.statusText,
         headers: {{ 'content-type': 'application/json' }},
       }});
-    }} catch (_) {{
-      return res;
+    }} catch (err) {{
+      logErr(err);  // 记录到日志文件
+      return res;  // 解析失败原样返回，不阻断市场
     }}
   }};
-  orig({url:?}, {{ cache: 'no-cache' }})
-    .then((r) => (r.ok ? r.json() : null))
-    .then((cfg) => {{
-      const list = cfg && Array.isArray(cfg.plugins) ? cfg.plugins : [];
-      for (const e of list)
-        if (e && e.verdict === 'whitelist' && typeof e.name === 'string' && e.name) ALLOW.add(e.name);
-    }})
-    .catch(() => {{}});
 }})();"#,
-        url = MARKET_ALLOWLIST_URL
+        urls = urls_js,
+        timeout_ms = ALLOWLIST_FETCH_TIMEOUT_MS
     )
 }
 
@@ -624,7 +698,8 @@ pub fn run() {
             start_dsh_service,
             stop_dsh_service,
             restart_dsh_service,
-            app_version
+            app_version,
+            log_frontend_error
         ])
         .setup(|app| {
             let quit_i = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;

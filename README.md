@@ -93,6 +93,7 @@ bash scripts/release.sh patch    # 先 bump 补丁版本（同步 tauri.conf.jso
 - 托盘驻留：关闭窗口时应用保持运行，点击托盘图标恢复
 - 托盘菜单支持「显示窗口 / 重启 DSH / 退出」
 - IPC 命令：`get_dsh_status`、`start_dsh_service`、`stop_dsh_service`、`restart_dsh_service`
+- **插件市场白名单过滤**：市场目录经远程 `plugins.json`（审计索引）白名单过滤，仅展示 `verdict` 为 `whitelist` 的插件；白名单不可达（离线/格式错误）时市场不展示任何插件（fail-closed）
 
 ## 应用逻辑
 
@@ -102,6 +103,16 @@ bash scripts/release.sh patch    # 先 bump 补丁版本（同步 tauri.conf.jso
 2. `ensure_runtime`：检查 App 数据目录下 `runtime/dsh-version` 标记与内嵌版本是否一致；不一致（首次启动或升级）则把 `.app/Contents/Resources/runtime/` 复制到可写的 App 数据目录（优先 APFS `cp -Rc` clone，失败回退递归拷贝），随后补 node 可执行权限并移除 quarantine 属性
 3. `spawn_dsh_web`：用解包目录中的 node 拉起 `<runtime>/node_modules/@deepseek-ai/dsh/lib/bin.js web --port 0`，后台线程持续读取 stdout，解析到 `dsh web: http://127.0.0.1:<port>` 就绪信号后，将 Tauri 窗口 `navigate()` 到官方 Web UI，并向前端发出 `dsh-ready` 事件
 4. 前端收到 `dsh-ready` 后也会自行 `window.location.href` 跳转，并每 500ms 轮询 `get_dsh_status` 兜底——dev 模式下 vite 首次编译慢，页面可能错过后端发出的事件和导航，两条自愈路径保证最终一定会进入 Web UI
+
+### 插件市场白名单过滤
+
+1. **预装市场插件**：`seed_dsh_market` 在拉起 DSH 前，把 `dshmarket` 写入 web profile 的 `dsh.profile.bundles`（仅在全新 profile 或未被用户改动的默认清单上写入）
+2. **注入过滤脚本**：`on_page_load` 在每次页面加载完成（`PageLoadEvent::Finished`）时注入 `market_filter_script`，脚本用 `window.__dswMarketFilter` 标记保证只注入一次
+3. **拦截市场目录请求**：市场 UI 通过 `fetch("/dsh-market/registry")` 拉取目录；脚本包装 `window.fetch`，拦截该请求并将 `data.registry.plugins` 过滤为仅白名单内的插件，再以新的 `Response` 返回
+4. **白名单来源**：白名单不内置于安装包，每次页面加载依次尝试拉取 GitHub 仓库 `hotpot-labs/awesome-dsh-industry-plugins` 的 `plugins.json`——raw 地址优先，被墙时回退 jsDelivr 镜像 `cdn.jsdelivr.net`（每个源带超时）；该文件是审计索引，`plugins[]` 每项以 `name`（"owner/repo"）为键、带 `verdict`（whitelist / greylist / blacklist / pending），仅 `verdict === 'whitelist'` 且 `name` 为非空字符串的项加入允许集合
+5. **匹配规则**：市场 registry 条目按 `owner + "/" + name` 拼接后与允许集合比对
+6. **fail-closed**：允许集合初始为空、空集合隐藏全部插件，因此白名单不可达（离线、JSON 解析失败）时市场展示为空
+7. **仅表现层过滤**：市场包与 DSH 服务端（含安装接口）均不受影响，过滤只作用于前端展示层
 
 ### 启动加载页
 

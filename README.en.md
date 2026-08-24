@@ -7,146 +7,157 @@
 # DeepSeek Work
 <img src="./public/favicon.svg" style="width: 40px; height: 40px;"/>
 
-基于 **Tauri v2** 的 DeepSeek 桌面 Agent。
+A DeepSeek desktop Agent built on **Tauri v2**.
 
-桌面端作为 **DSH 官方 Web UI 的桌面壳**：启动时拉起本地 `dsh web` 子进程，待其就绪后把 Tauri 窗口导航到官方 Web 界面。
+The desktop app acts as a **desktop shell for the official DSH Web UI**: on startup it launches a local `dsh web` subprocess and, once ready, navigates the Tauri window to the official web interface.
 
-安装包**完全自包含**：内嵌 Node.js 运行时与 `@deepseek-ai/dsh` 完整依赖树，用户机器无需预装 Node.js / pnpm 或任何项目依赖。
+The installer is **fully self-contained**: it bundles the Node.js runtime and the complete `@deepseek-ai/dsh` dependency tree, so users need no pre-installed Node.js / pnpm or any project dependencies.
 
-增加插件市场，具体插件目录见：https://github.com/hotpot-labs/awesome-dsh-industry-plugins；
+Adds a plugin market; see the plugin catalog at https://github.com/hotpot-labs/awesome-dsh-industry-plugins;
 
-查看项目和下载：https://www.hotpotliuyu.com/ds-work/
+Project site and downloads: https://www.hotpotliuyu.com/ds-work/
 
 <img src="./public/ds_work_website.png" style="width: 80%;"/>
 
 </div>
 
 
-## 技术栈
+## Tech Stack
 
 - Tauri v2
-- React 18（仅用于启动加载页）
+- React 18 (startup loading page only)
 - Vite 7
 - TypeScript 5.8
-- `@deepseek-ai/dsh` `0.1.0-rc.6`（内嵌）
+- `@deepseek-ai/dsh` `0.1.0-rc.6` (bundled)
 
-## 开发
+## Development
 
 ```bash
-# 安装依赖
+# Install dependencies
 pnpm install
 
-# 准备内嵌运行环境（生成 src-tauri/runtime/，首次或 dsh 版本变化时执行）
+# Prepare the bundled runtime (generates src-tauri/runtime/; run on first setup or when the dsh version changes)
 bash scripts/prepare-runtime.sh
 
-# 开发模式（热更新 + Tauri 窗口，debug 构建直接使用 src-tauri/runtime/）
+# Development mode (hot reload + Tauri window; debug builds use src-tauri/runtime/ directly)
 pnpm tauri dev
 
-# 仅前端开发服务器
+# Frontend dev server only
 pnpm dev
 ```
 
-## 构建安装包
+## Building the Installer
 
 ```bash
-# 先准备内嵌运行环境（约 450 MB，会打进安装包）
+# First prepare the bundled runtime (~450 MB, packed into the installer)
 bash scripts/prepare-runtime.sh
 
 pnpm tauri build
 ```
 
-`prepare-runtime.sh` 在临时目录用 pnpm hoisted 模式全新安装 `@deepseek-ai/dsh`（得到无符号链接的扁平依赖树），连同系统 Node.js 单文件二进制一起复制到 `src-tauri/runtime/`，并冒烟验证 `dsh web` 能独立启动。
+`prepare-runtime.sh` installs `@deepseek-ai/dsh` fresh in a temp directory using pnpm hoisted mode (producing a flat, symlink-free dependency tree), copies it together with the single-file system Node.js binary into `src-tauri/runtime/`, and smoke-tests that `dsh web` can start on its own.
 
-构建产物：
+Build artifacts:
 
-- `src-tauri/target/release/bundle/macos/DeepSeek Work.app`（约 458 MB）
-- `src-tauri/target/release/bundle/dmg/DeepSeek Work_0.1.0_aarch64.dmg`（约 99 MB）
+- `src-tauri/target/release/bundle/macos/DeepSeek Work.app` (~458 MB)
+- `src-tauri/target/release/bundle/dmg/DeepSeek Work_0.1.0_aarch64.dmg` (~99 MB)
 
-## 发布（GitHub Releases）
+## Releasing (GitHub Releases)
 
-安装包体积大（dmg 约 99 MB），不入库，统一通过 GitHub Releases 分发。两种方式：
+The installer is large (dmg ~99 MB), so it is not committed and is distributed exclusively via GitHub Releases. Two options:
 
-**CI 发布（推荐）**：`.github/workflows/release.yml` 在打 tag 时自动并行构建 macOS（`macos-latest`，产出 dmg）和 Windows（`windows-latest`，产出 NSIS 安装程序 exe），并上传到同一个 Release：
+**CI release (recommended)**: `.github/workflows/release.yml` builds macOS (`macos-latest`, producing a dmg) and Windows (`windows-latest`, producing an NSIS installer exe) in parallel when a tag is pushed, and uploads both to the same Release:
 
 ```bash
 git tag v0.1.0 && git push origin v0.1.0
 ```
 
-**本地发布**：`scripts/release.sh` 在本机完成同样流程并调用 `gh` 创建 Release（需先 `brew install gh && gh auth login`）：
+**Local release**: `scripts/release.sh` performs the same flow locally and uses `gh` to create the Release (requires `brew install gh && gh auth login` first):
 
 ```bash
-bash scripts/release.sh          # 按当前版本号发布
-bash scripts/release.sh patch    # 先 bump 补丁版本（同步 tauri.conf.json 与 Cargo.toml）再发布
+bash scripts/release.sh          # publish at the current version
+bash scripts/release.sh patch    # bump the patch version (syncs tauri.conf.json and Cargo.toml) then publish
 ```
 
-两种方式都会把产物同步复制到 `dist-desktop/`（该目录已 gitignore）。
+Both options also copy the artifacts to `dist-desktop/` (gitignored).
 
-## 功能
+## Features
 
-- **完全自包含**：内嵌 Node.js v24 与 DSH 全部依赖，无需用户预装任何环境
-- **首次启动自动解包**：把运行环境复制到 `~/Library/Application Support/com.deepseek-harness.desktop/runtime`（APFS clone 秒级完成；DSH 版本升级时自动重新解包）
-- 启动加载页为 spinner + 状态文字（「正在准备运行环境…」→「正在启动 DSH 服务…」），出错时显示错误与「重试」按钮
-- 运行环境就绪后自动拉起 `dsh web` 子进程（`--port 0` 自动分配端口）
-- 解析 stdout 中的 `dsh web: http://127.0.0.1:<port>` 就绪信号
-- 窗口自动导航到官方 DSH Web UI
-- **错误日志**：启动/运行中的错误（运行环境解包失败、DSH 启动失败、DSH 子进程 stderr 输出、DSH 异常退出）追加写入 `~/deepseek-work-preview/deepseek-work.log`（目录不存在自动创建，带时间戳）
-- 托盘驻留：关闭窗口时应用保持运行，点击托盘图标恢复
-- 托盘菜单支持「显示窗口 / 重启 DSH / 退出」
-- IPC 命令：`get_dsh_status`、`start_dsh_service`、`stop_dsh_service`、`restart_dsh_service`
+- **Fully self-contained**: bundles Node.js v24 and all DSH dependencies, no environment pre-installation required
+- **Automatic first-launch extraction**: copies the runtime to `~/Library/Application Support/com.deepseek-harness.desktop/runtime` (APFS clone completes in seconds; re-extracts automatically on DSH version upgrades)
+- Startup loading page is a spinner + status text ("Preparing runtime…" → "Starting DSH service…"); on error it shows the message and a "Retry" button
+- Automatically launches the `dsh web` subprocess once the runtime is ready (`--port 0` auto-assigns the port)
+- Parses the `dsh web: http://127.0.0.1:<port>` ready signal from stdout
+- The window automatically navigates to the official DSH Web UI
+- **Error logging**: startup/runtime errors (runtime extraction failure, DSH launch failure, DSH subprocess stderr output, abnormal DSH exit) are appended to `~/deepseek-work-preview/deepseek-work.log` (directory auto-created, with timestamps)
+- Tray resident: the app keeps running when the window is closed; click the tray icon to restore
+- Tray menu: "Show window / Restart DSH / Quit"
+- IPC commands: `get_dsh_status`, `start_dsh_service`, `stop_dsh_service`, `restart_dsh_service`
+- **Plugin market allowlist filtering**: the market catalog is filtered by a remote `plugins.json` allowlist (audit index); only plugins with `verdict` `whitelist` are shown, and while the allowlist is unreachable (offline / malformed JSON) the market shows nothing (fail-closed)
 
-## 应用逻辑
+## Application Logic
 
-### 整体启动流程
+### Startup Flow
 
-1. Tauri `setup` 阶段：构建托盘菜单（显示窗口 / 重启 DSH / 退出）、注册「关闭窗口即隐藏」行为，并在异步任务中执行启动序列；前端 `App.tsx` 同时通过 `invoke('start_dsh_service')` 触发同一流程——两条路径幂等，`AppState` 中的锁保证只执行一次
-2. `ensure_runtime`：检查 App 数据目录下 `runtime/dsh-version` 标记与内嵌版本是否一致；不一致（首次启动或升级）则把 `.app/Contents/Resources/runtime/` 复制到可写的 App 数据目录（优先 APFS `cp -Rc` clone，失败回退递归拷贝），随后补 node 可执行权限并移除 quarantine 属性
-3. `spawn_dsh_web`：用解包目录中的 node 拉起 `<runtime>/node_modules/@deepseek-ai/dsh/lib/bin.js web --port 0`，后台线程持续读取 stdout，解析到 `dsh web: http://127.0.0.1:<port>` 就绪信号后，将 Tauri 窗口 `navigate()` 到官方 Web UI，并向前端发出 `dsh-ready` 事件
-4. 前端收到 `dsh-ready` 后也会自行 `window.location.href` 跳转，并每 500ms 轮询 `get_dsh_status` 兜底——dev 模式下 vite 首次编译慢，页面可能错过后端发出的事件和导航，两条自愈路径保证最终一定会进入 Web UI
+1. Tauri `setup` stage: builds the tray menu (show window / restart DSH / quit), registers the "hide on close" behavior, and runs the startup sequence in an async task; the frontend `App.tsx` also triggers the same flow via `invoke('start_dsh_service')` — both paths are idempotent and the lock in `AppState` guarantees it runs only once
+2. `ensure_runtime`: checks whether the `runtime/dsh-version` marker in the app data dir matches the bundled version; on mismatch (first launch or upgrade) copies `.app/Contents/Resources/runtime/` to the writable app data dir (preferring APFS `cp -Rc` clone, falling back to a recursive copy), then restores the node executable bit and strips the quarantine attribute
+3. `spawn_dsh_web`: uses the extracted node to launch `<runtime>/node_modules/@deepseek-ai/dsh/lib/bin.js web --port 0`; a background thread keeps reading stdout and, once the `dsh web: http://127.0.0.1:<port>` ready signal is parsed, `navigate()`s the Tauri window to the official Web UI and emits `dsh-ready` to the frontend
+4. On `dsh-ready` the frontend also redirects via `window.location.href` and polls `get_dsh_status` every 500ms as a fallback — in dev mode vite's first compile is slow and the page may miss the backend event and navigation; the two self-healing paths guarantee it eventually reaches the Web UI
 
-### 启动加载页
+### Plugin Market Allowlist Filtering
 
-- 无进度条：spinner + 一行状态文字，由后端 `boot-status` 字符串事件驱动（「首次启动，正在准备运行环境…」「正在启动 DSH 服务…」等）
-- 页面检测不到 Tauri 运行环境时（例如在普通浏览器中打开 vite 开发地址）显示提示而非裸报错
-- 出错时收到 `dsh-error` 事件，显示错误信息与「重试」按钮，点击后调用 `restart_dsh_service`（会重新走 `ensure_runtime` + 拉起子进程）
+1. **Preinstall the market plugin**: `seed_dsh_market` writes `dshmarket` into the web profile's `dsh.profile.bundles` before starting DSH (only on a fresh profile or an untouched default manifest)
+2. **Inject the filter script**: `on_page_load` injects `market_filter_script` on every page load (`PageLoadEvent::Finished`); the script guards with `window.__dswMarketFilter` to run only once
+3. **Intercept the catalog request**: the market UI loads its catalog via `fetch("/dsh-market/registry")`; the script wraps `window.fetch`, intercepts that request, filters `data.registry.plugins` down to allowed plugins, and returns a new `Response`
+4. **Allowlist source**: the allowlist is not bundled; it is fetched once per page load from `plugins.json` in the GitHub repo `hotpot-labs/awesome-dsh-industry-plugins` (raw URL first, falling back to the jsDelivr mirror `cdn.jsdelivr.net` when it is unreachable, each source with a timeout). That file is an audit index — each `plugins[]` entry is keyed by `name` ("owner/repo") with a `verdict` of whitelist / greylist / blacklist / pending; only entries with `verdict === 'whitelist'` and a non-empty string `name` are added to the allowed set
+5. **Matching rule**: market registry entries join on `owner + "/" + name` and are compared against the allowed set
+6. **Fail-closed**: the allowed set starts empty and an empty set hides everything, so while the allowlist is unreachable (offline, JSON parse failure) the market shows nothing
+7. **Presentation-layer only**: the market package and the DSH server (including its install endpoint) are untouched; the filter only affects the frontend display
 
-## 运行要求
+### Loading Screen
 
-无。安装包自包含 Node.js 与 DSH 运行时：
+- No progress bar: a spinner + one line of status text, driven by the backend `boot-status` string events ("First launch, preparing runtime…", "Starting DSH service…", etc.)
+- When the page detects no Tauri runtime (e.g. opening the vite dev address in a normal browser), it shows a hint instead of a bare error
+- On error it receives the `dsh-error` event, shows the message and a "Retry" button, which calls `restart_dsh_service` (re-runs `ensure_runtime` + launches the subprocess)
 
-- **macOS**：首次启动解包运行环境到 `~/Library/Application Support/com.deepseek-harness.desktop/runtime`（约 450 MB）。应用未做 Apple 公证，从浏览器下载的 dmg 安装后首次打开可能提示「"DeepSeek Work"已损坏，无法打开」——这是 Gatekeeper 的隔离属性所致，在终端执行一次 `xattr -cr /Applications/DeepSeek\ Work.app` 后即可正常打开
-- **Windows**：NSIS 安装包（`DeepSeek Work_<version>_x64-setup.exe`）；首次启动解包运行环境到 `%APPDATA%/com.deepseek-harness.desktop/runtime`；应用未签名，SmartScreen 提示时选「仍要运行」。若启动报「拒绝访问 (os error 5)」，通常是杀毒软件拦截了内嵌的 node.exe，请将安装目录或 `%APPDATA%/com.deepseek-harness.desktop` 加入杀软白名单
+## Requirements
+
+None. The installer is self-contained with Node.js and the DSH runtime:
+
+- **macOS**: first launch extracts the runtime to `~/Library/Application Support/com.deepseek-harness.desktop/runtime` (~450 MB). The app is not Apple-notarized; the first open after installing the dmg from the browser may warn ""DeepSeek Work" is damaged and cannot be opened" — this is Gatekeeper's quarantine attribute; run `xattr -cr /Applications/DeepSeek\ Work.app` once in the terminal to open it normally
+- **Windows**: NSIS installer (`DeepSeek Work_<version>_x64-setup.exe`); first launch extracts the runtime to `%APPDATA%/com.deepseek-harness.desktop/runtime`; the app is unsigned, so choose "Run anyway" on the SmartScreen prompt. If launch reports "Access is denied (os error 5)", it is usually antivirus blocking the bundled node.exe — add the install directory or `%APPDATA%/com.deepseek-harness.desktop` to the antivirus allowlist
 
 ```bash
 open dist-desktop/DeepSeek\ Work.app
 ```
 
-## 项目结构
+## Project Structure
 
 ```
 .
-├── src/                    React 启动加载页
-│   ├── App.tsx             spinner 状态页与 DSH 事件监听
-│   ├── App.css             启动页样式
-│   └── main.tsx            入口
-├── src-tauri/              Tauri / Rust 后端
-│   ├── src/lib.rs          运行环境解包、DSH 子进程管理、托盘、IPC
-│   ├── runtime/            prepare-runtime.sh 产物（gitignore，打包进 .app）
-│   ├── tauri.conf.json     Tauri 配置（bundle.resources 引用 runtime/）
-│   └── Cargo.toml          Rust 依赖
+├── src/                    React startup loading page
+│   ├── App.tsx             spinner status page and DSH event listening
+│   ├── App.css             loading page styles
+│   └── main.tsx            entry
+├── src-tauri/              Tauri / Rust backend
+│   ├── src/lib.rs          runtime extraction, DSH subprocess management, tray, IPC
+│   ├── runtime/            prepare-runtime.sh output (gitignored, packed into .app)
+│   ├── tauri.conf.json     Tauri config (bundle.resources references runtime/)
+│   └── Cargo.toml          Rust dependencies
 ├── scripts/
-│   ├── prepare-runtime.sh  生成自包含运行环境（Node + DSH 依赖树）
-│   └── release.sh          本地一键构建并发布 GitHub Release
+│   ├── prepare-runtime.sh  generates the self-contained runtime (Node + DSH dependency tree)
+│   └── release.sh          local one-click build and GitHub Release publish
 ├── .github/workflows/
-│   └── release.yml         打 tag 触发 CI 构建并发布 Release
-├── dist-desktop/           已构建的安装包
-├── implement-plan.md       实施规范参考文档
-└── README.md               本文件
+│   └── release.yml         tag-triggered CI build and Release publish
+├── dist-desktop/           built installers
+├── implement-plan.md       implementation spec reference document
+└── README.md               this file
 ```
 
-## 许可证
+## License
 
-本项目基于 [MIT](LICENSE) 协议发布。
+This project is released under the [MIT](LICENSE) license.
 
-本项目基于 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`@deepseek-ai/dsh`，MIT，Copyright (c) 2026 DeepSeek）实现：安装包内嵌其完整运行时，桌面窗口展示的即 DSH 官方 Web UI，应用图标复用了 DSH 的鲸鱼 logo。
+This project is built on [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`@deepseek-ai/dsh`, MIT, Copyright (c) 2026 DeepSeek): the installer bundles its full runtime, the desktop window shows the official DSH Web UI, and the app icon reuses DSH's whale logo.
 
-第三方组件及其协议声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for third-party components and their licenses.
