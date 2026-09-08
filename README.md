@@ -106,7 +106,7 @@ bash scripts/release.sh patch    # 先 bump 补丁版本（同步 tauri.conf.jso
 
 ### 插件市场白名单过滤
 
-1. **预装插件**：`seed_preinstalled_bundles` 在拉起 DSH 前，把预装插件（`dshmarket`、`dsh-notifier-plugin`、`dsh-version-plugin`、`dsh-prompt-history-plugin`、`dsh-wooden-fish`）写入 web profile 的 `dsh.profile.bundles`（全新 profile 直接写入；用户自定义过的清单只追加缺失的预装项）
+1. **预装插件**：`seed_preinstalled_bundles` 在拉起 DSH 前，把预装插件（`dshmarket`、`dsh-notifier-plugin`、`dsh-version-plugin`、`dsh-prompt-history-plugin`、`dsh-wooden-fish`、`dsh-usage`）写入 web profile 的 `dsh.profile.bundles`（全新 profile 直接写入；用户自定义过的清单只追加缺失的预装项）
 2. **注入过滤脚本**：`on_page_load` 在每次页面加载完成（`PageLoadEvent::Finished`）时注入 `market_filter_script`，脚本用 `window.__dswMarketFilter` 标记保证只注入一次
 3. **拦截市场目录请求**：市场 UI 通过 `fetch("/dsh-market/registry")` 拉取目录；脚本包装 `window.fetch`，拦截该请求并将 `data.registry.plugins` 过滤为仅白名单内的插件，再以新的 `Response` 返回
 4. **白名单来源**：白名单不内置于安装包，每次页面加载依次尝试拉取 GitHub 仓库 `hotpot-labs/awesome-dsh-industry-plugins` 的 `plugins.json`——raw 地址优先，被墙时回退 jsDelivr 镜像 `cdn.jsdelivr.net`（每个源带超时）；该文件是审计索引，`plugins[]` 每项以 `name`（"owner/repo"）为键、带 `verdict`（whitelist / greylist / blacklist / pending），仅 `verdict === 'whitelist'` 且 `name` 为非空字符串的项加入允许集合

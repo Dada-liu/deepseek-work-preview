@@ -381,6 +381,7 @@ const PREINSTALLED_BUNDLES: &[&str] = &[
     "dsh-version-plugin",
     "dsh-prompt-history-plugin",
     "dsh-wooden-fish",
+    "dsh-usage",
 ];
 /// The bundle list dsh's own initProfile writes for a fresh web profile.
 const WEB_PROFILE_DEFAULT_BUNDLES: [&str; 2] =
