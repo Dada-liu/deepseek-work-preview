@@ -83,11 +83,26 @@ if ! git clone --depth 1 --branch "$DSH_NOTIFIER_PLUGIN_REF" "$DSH_NOTIFIER_PLUG
   rm -rf "$NOTIFIER_BUILD"
   exit 1
 fi
-(cd "$NOTIFIER_BUILD/repo" && pnpm install && pnpm run build:tauri) || {
-  echo "error: failed to build dsh-notifier-plugin" >&2
-  rm -rf "$NOTIFIER_BUILD"
-  exit 1
-}
+# The plugin's build:tauri script sets DSH_NOTIFIER_BACKEND with POSIX env
+# syntax, which npm runs through cmd.exe on Windows where it is not
+# recognized — invoke the underlying build steps directly there so Git Bash
+# handles the variable instead.
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    (cd "$NOTIFIER_BUILD/repo" && pnpm install && pnpm exec tsc -p tsconfig.json && DSH_NOTIFIER_BACKEND=tauri pnpm exec tsdown) || {
+      echo "error: failed to build dsh-notifier-plugin" >&2
+      rm -rf "$NOTIFIER_BUILD"
+      exit 1
+    }
+    ;;
+  *)
+    (cd "$NOTIFIER_BUILD/repo" && pnpm install && pnpm run build:tauri) || {
+      echo "error: failed to build dsh-notifier-plugin" >&2
+      rm -rf "$NOTIFIER_BUILD"
+      exit 1
+    }
+    ;;
+esac
 PLUGIN_TARBALL="$(cd "$NOTIFIER_BUILD/repo" && npm pack --pack-destination "$STAGE" | tail -1)"
 rm -rf "$NOTIFIER_BUILD"
 if [ ! -f "$STAGE/$PLUGIN_TARBALL" ]; then
