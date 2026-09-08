@@ -35,6 +35,10 @@ jobs:
         shell: bash
         run: bash scripts/prepare-runtime.sh
 
+      - name: Show bundled runtime versions
+        shell: bash
+        run: cat src-tauri/runtime/dsh-version
+
       - name: Build app
         run: pnpm tauri build
 

@@ -9,8 +9,17 @@ RUNTIME="$ROOT/src-tauri/runtime"
 DSH_SRC="$ROOT/node_modules/@deepseek-ai/dsh"
 # Preinstalled plugin: the dsh-market plugin market (npm package "dshmarket").
 # Bundled into the runtime and seeded into the web profile on first launch
-# (see seed_dsh_market in src-tauri/src/lib.rs).
-DSH_MARKET_VERSION="1.18.0"
+# (see seed_preinstalled_bundles in src-tauri/src/lib.rs).
+DSH_MARKET_VERSION="1.45.0"
+# Preinstalled plugin: dsh-notifier-plugin (Tauri desktop variant), built
+# from the pinned GitHub tag below.
+DSH_NOTIFIER_PLUGIN_REPO="https://github.com/hotpot-labs/dsh-notifier-plugin"
+DSH_NOTIFIER_PLUGIN_REF="v0.1.0"
+DSH_NOTIFIER_PLUGIN_VERSION="0.1.0"
+# Preinstalled plugins pulled straight from npm.
+DSH_VERSION_PLUGIN_VERSION="1.0.1"
+DSH_PROMPT_HISTORY_PLUGIN_VERSION="0.1.0"
+DSH_WOODEN_FISH_VERSION="0.1.0"
 # Package managers bundled next to the Node binary. The market plugin's
 # one-click installs shell out to pnpm/npm and look for them in the Node
 # binary's own directory (dshmarket dsh-cli.js nodeBinDir), so shims are
@@ -59,9 +68,33 @@ DSH_VERSION="$(cd "$ROOT" && node -p "require('./node_modules/@deepseek-ai/dsh/p
   echo "error: $DSH_SRC missing, run pnpm install first" >&2
   exit 1
 }
-echo "==> Installing @deepseek-ai/dsh@$DSH_VERSION + dshmarket@$DSH_MARKET_VERSION + npm@$NPM_VERSION + pnpm@$PNPM_VERSION into staging dir (hoisted)"
+echo "==> Installing @deepseek-ai/dsh@$DSH_VERSION + dshmarket@$DSH_MARKET_VERSION + dsh-notifier-plugin@$DSH_NOTIFIER_PLUGIN_VERSION + dsh-version-plugin@$DSH_VERSION_PLUGIN_VERSION + dsh-prompt-history-plugin@$DSH_PROMPT_HISTORY_PLUGIN_VERSION + dsh-wooden-fish@$DSH_WOODEN_FISH_VERSION + npm@$NPM_VERSION + pnpm@$PNPM_VERSION into staging dir (hoisted)"
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
+
+# Build and pack dsh-notifier-plugin (Tauri variant) from the pinned GitHub
+# tag so it can be installed into the hoisted runtime tree the same way
+# dshmarket is. The clone lives outside $STAGE so the staging workspace
+# never sees it; only the packed tarball enters the staging install.
+echo "==> Building dsh-notifier-plugin (Tauri variant) from $DSH_NOTIFIER_PLUGIN_REPO@$DSH_NOTIFIER_PLUGIN_REF"
+NOTIFIER_BUILD="$(mktemp -d)"
+if ! git clone --depth 1 --branch "$DSH_NOTIFIER_PLUGIN_REF" "$DSH_NOTIFIER_PLUGIN_REPO" "$NOTIFIER_BUILD/repo"; then
+  echo "error: failed to clone $DSH_NOTIFIER_PLUGIN_REPO at ref $DSH_NOTIFIER_PLUGIN_REF" >&2
+  rm -rf "$NOTIFIER_BUILD"
+  exit 1
+fi
+(cd "$NOTIFIER_BUILD/repo" && pnpm install && pnpm run build:tauri) || {
+  echo "error: failed to build dsh-notifier-plugin" >&2
+  rm -rf "$NOTIFIER_BUILD"
+  exit 1
+}
+PLUGIN_TARBALL="$(cd "$NOTIFIER_BUILD/repo" && npm pack --pack-destination "$STAGE" | tail -1)"
+rm -rf "$NOTIFIER_BUILD"
+if [ ! -f "$STAGE/$PLUGIN_TARBALL" ]; then
+  echo "error: npm pack did not produce $PLUGIN_TARBALL" >&2
+  exit 1
+fi
+
 # The staging install runs without a lockfile, so ^-ranged @deepseek-ai/*
 # sub-packages float to newer rc builds than the tested set in the project's
 # pnpm-lock.yaml (e.g. rc.8 needs Node APIs our bundled Node lacks). Pin
@@ -75,7 +108,7 @@ case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*) STAGE_NATIVE="$(cygpath -w "$STAGE")" ;;
 esac
 cat > "$STAGE/package.json" <<EOF
-{"name":"dsh-runtime-stage","private":true,"dependencies":{"@deepseek-ai/dsh":"$DSH_VERSION","dshmarket":"$DSH_MARKET_VERSION","npm":"$NPM_VERSION","pnpm":"$PNPM_VERSION"}}
+{"name":"dsh-runtime-stage","private":true,"dependencies":{"@deepseek-ai/dsh":"$DSH_VERSION","dshmarket":"$DSH_MARKET_VERSION","dsh-notifier-plugin":"file:./$PLUGIN_TARBALL","dsh-version-plugin":"$DSH_VERSION_PLUGIN_VERSION","dsh-prompt-history-plugin":"$DSH_PROMPT_HISTORY_PLUGIN_VERSION","dsh-wooden-fish":"$DSH_WOODEN_FISH_VERSION","npm":"$NPM_VERSION","pnpm":"$PNPM_VERSION"}}
 EOF
 # Reuse the project's build-approval / release-age settings.
 cp "$ROOT/pnpm-workspace.yaml" "$STAGE/pnpm-workspace.yaml"
@@ -94,25 +127,35 @@ pnpm -C "$STAGE" install --prod --node-linker=hoisted --no-lockfile
 echo "==> Copying runtime tree (dereferencing any remaining symlinks)"
 cp -RL "$STAGE/node_modules/." "$RUNTIME/node_modules/"
 
-# dshmarket is not a dependency of the published dsh package, so dsh's
-# boot-time module fallback ($DSH_HOME/profiles/node_modules symlink farm,
-# a BFS over dsh's dependency closure) would skip it and the cordis loader
-# could not resolve the plugin module from the profile directory. Register
-# it as a runtime dependency of the bundled dsh copy so the farm links it.
-echo "==> Registering dshmarket in the bundled dsh dependency closure"
+# The preinstalled plugin packages are not dependencies of the published dsh
+# package, so dsh's boot-time module fallback ($DSH_HOME/profiles/node_modules
+# symlink farm, a BFS over dsh's dependency closure) would skip them and the
+# cordis loader could not resolve the plugin modules from the profile
+# directory. Register them as runtime dependencies of the bundled dsh copy so
+# the farm links them.
+echo "==> Registering preinstalled plugins in the bundled dsh dependency closure"
 # Same Windows caveat as above: run node from $ROOT with a relative path,
 # native node.exe cannot open the POSIX $RUNTIME path under Git Bash.
 (cd "$ROOT" && node -e "
   const fs = require('fs');
   const f = 'src-tauri/runtime/node_modules/@deepseek-ai/dsh/package.json';
   const pkg = JSON.parse(fs.readFileSync(f, 'utf8'));
-  pkg.dependencies = { ...pkg.dependencies, dshmarket: '$DSH_MARKET_VERSION' };
+  pkg.dependencies = {
+    ...pkg.dependencies,
+    dshmarket: '$DSH_MARKET_VERSION',
+    'dsh-notifier-plugin': '$DSH_NOTIFIER_PLUGIN_VERSION',
+    'dsh-version-plugin': '$DSH_VERSION_PLUGIN_VERSION',
+    'dsh-prompt-history-plugin': '$DSH_PROMPT_HISTORY_PLUGIN_VERSION',
+    'dsh-wooden-fish': '$DSH_WOODEN_FISH_VERSION',
+  };
   fs.writeFileSync(f, JSON.stringify(pkg, null, 2) + '\n');
 ")
-[ -f "$RUNTIME/node_modules/dshmarket/cordis.patch.yml" ] || {
-  echo "error: dshmarket bundle patch missing from the runtime tree" >&2
-  exit 1
-}
+for pkg in dshmarket dsh-notifier-plugin dsh-version-plugin dsh-prompt-history-plugin dsh-wooden-fish; do
+  [ -f "$RUNTIME/node_modules/$pkg/cordis.patch.yml" ] || {
+    echo "error: $pkg bundle patch missing from the runtime tree" >&2
+    exit 1
+  }
+done
 
 # npm/pnpm launchers placed NEXT TO the Node binary. dshmarket spawns
 # `pnpm`/`npm` bare and prepends the Node executable's own directory
@@ -149,13 +192,14 @@ printf '@echo off\r\n"%%~dp0node.exe" "%%~dp0node_modules\\pnpm\\bin\\pnpm.cjs" 
 # (ensure_runtime in src-tauri/src/lib.rs re-extracts when it changes), so it
 # must cover everything baked into the runtime — including the preinstalled
 # plugin set and the bundled package managers, not just the dsh version.
-echo "$DSH_VERSION+dshmarket-$DSH_MARKET_VERSION+npm-$NPM_VERSION+pnpm-$PNPM_VERSION" > "$RUNTIME/dsh-version"
+echo "$DSH_VERSION+dshmarket-$DSH_MARKET_VERSION+dsh-notifier-plugin-$DSH_NOTIFIER_PLUGIN_VERSION+dsh-version-plugin-$DSH_VERSION_PLUGIN_VERSION+dsh-prompt-history-plugin-$DSH_PROMPT_HISTORY_PLUGIN_VERSION+dsh-wooden-fish-$DSH_WOODEN_FISH_VERSION+npm-$NPM_VERSION+pnpm-$PNPM_VERSION" > "$RUNTIME/dsh-version"
 echo "==> DSH version: $DSH_VERSION"
 du -sh "$RUNTIME"
 
 # 3. Smoke test: the copied runtime must boot standalone, with the web
-#    profile seeded to load the preinstalled dshmarket bundle (same shape
-#    that seed_dsh_market in src-tauri/src/lib.rs writes on first launch).
+#    profile seeded to load the preinstalled plugin bundles (same shape
+#    that seed_preinstalled_bundles in src-tauri/src/lib.rs writes on first
+#    launch).
 echo "==> Smoke-testing bundled npm/pnpm shims"
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*)
@@ -173,7 +217,7 @@ LOG="$(mktemp)"
 SMOKE_HOME="$(mktemp -d)"
 mkdir -p "$SMOKE_HOME/profiles/web"
 cat > "$SMOKE_HOME/profiles/web/package.json" <<EOF
-{"name":"dsh-profile-web","private":true,"dependencies":{},"dsh":{"profile":{"bundles":["@deepseek-ai/dsh-base","@deepseek-ai/dsh-web-app","dshmarket"]}}}
+{"name":"dsh-profile-web","private":true,"dependencies":{},"dsh":{"profile":{"bundles":["@deepseek-ai/dsh-base","@deepseek-ai/dsh-web-app","dshmarket","dsh-notifier-plugin","dsh-version-plugin","dsh-prompt-history-plugin","dsh-wooden-fish"]}}}
 EOF
 DSH_HOME="$SMOKE_HOME" "$RUNTIME/$NODE_BIN" "$RUNTIME/node_modules/@deepseek-ai/dsh/lib/bin.js" web --port 0 > "$LOG" 2>&1 &
 PID=$!
@@ -185,6 +229,12 @@ STATUS=""
 if [ -n "$URL" ]; then
   echo "==> OK: $(grep -m1 'dsh web: http' "$LOG")"
   STATUS="$(curl -fs --max-time 5 "$URL/dsh-market/status" 2>/dev/null || true)"
+fi
+# Verify the dsh-notifier-plugin layer was loaded by cordis.
+if grep -q "dsh-notifier-plugin" "$LOG" 2>/dev/null; then
+  echo "==> OK: dsh-notifier-plugin loaded in smoke test"
+else
+  echo "warn: dsh-notifier-plugin load not detected in smoke test log; continuing"
 fi
 kill -9 "$PID" 2>/dev/null || true
 if [ -z "$URL" ]; then

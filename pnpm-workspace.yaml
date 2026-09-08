@@ -203,6 +203,7 @@ minimumReleaseAgeExclude:
   - '@deepseek-ai/node-addon-landlock-run-linux-x64@0.1.1'
   - '@deepseek-ai/node-addon-landlock-run@0.1.1'
   - '@deepseek-ai/schemastery@3.18.1'
+  - '@tauri-apps/plugin-notification@2.4.0'
 onlyBuiltDependencies:
   - '@deepseek-ai/dsh-subprocess-local'
   - '@google/genai'

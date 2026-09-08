@@ -374,8 +374,14 @@ fn ensure_runtime(app: &AppHandle, state: &State<AppState>) -> Result<PathBuf, S
     Ok(dir)
 }
 
-/// The preinstalled dsh-market plugin (npm package name).
-const DSH_MARKET_PACKAGE: &str = "dshmarket";
+/// The preinstalled plugin bundles seeded into the web profile.
+const PREINSTALLED_BUNDLES: &[&str] = &[
+    "dshmarket",
+    "dsh-notifier-plugin",
+    "dsh-version-plugin",
+    "dsh-prompt-history-plugin",
+    "dsh-wooden-fish",
+];
 /// The bundle list dsh's own initProfile writes for a fresh web profile.
 const WEB_PROFILE_DEFAULT_BUNDLES: [&str; 2] =
     ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"];
@@ -386,15 +392,16 @@ const PROFILE_PATCH_TEMPLATE: &str = "# Your patch layer for this dsh profile, a
 const PROFILE_PNPM_WORKSPACE: &str =
     "packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n";
 
-/// Seed the preinstalled dsh-market plugin into the web profile.
+/// Seed the preinstalled plugins into the web profile.
 ///
-/// The plugin package ships inside the bundled runtime (registered in the
+/// These plugin packages ship inside the bundled runtime (registered in the
 /// bundled dsh copy's dependency closure, so dsh's boot-time module fallback
-/// links it into `$DSH_HOME/profiles/node_modules`); what remains here is
-/// listing it in the profile's `dsh.profile.bundles`. Only a fresh profile
-/// or an untouched default manifest is modified — a bundles list the user
-/// has customized (or deliberately removed the market from) is left alone.
-fn seed_dsh_market(app: &AppHandle) -> Result<(), String> {
+/// links them into `$DSH_HOME/profiles/node_modules`); what remains here is
+/// listing them in the profile's `dsh.profile.bundles`. Only a fresh profile
+/// or a manifest missing one of the preinstalled bundles is modified — a
+/// bundles list the user has customized is left alone except for appending
+/// missing preinstalled entries.
+fn seed_preinstalled_bundles(app: &AppHandle) -> Result<(), String> {
     let home = app.path().home_dir().map_err(|e| e.to_string())?;
     // Mirror dsh's home resolution ($DSH_HOME, then ~/.dsh).
     let dsh_home = std::env::var_os("DSH_HOME")
@@ -407,15 +414,16 @@ fn seed_dsh_market(app: &AppHandle) -> Result<(), String> {
     if !manifest_path.exists() {
         fs::create_dir_all(&dir)
             .map_err(|e| format!("创建 profile 目录失败 ({}): {}", dir.display(), e))?;
+        let bundles: Vec<_> = WEB_PROFILE_DEFAULT_BUNDLES
+            .iter()
+            .chain(PREINSTALLED_BUNDLES.iter())
+            .map(|s| serde_json::Value::String((*s).to_string()))
+            .collect();
         let manifest = serde_json::json!({
             "name": "dsh-profile-web",
             "private": true,
             "dependencies": {},
-            "dsh": { "profile": { "bundles": [
-                WEB_PROFILE_DEFAULT_BUNDLES[0],
-                WEB_PROFILE_DEFAULT_BUNDLES[1],
-                DSH_MARKET_PACKAGE,
-            ] } }
+            "dsh": { "profile": { "bundles": bundles } }
         });
         fs::write(
             &manifest_path,
@@ -433,37 +441,35 @@ fn seed_dsh_market(app: &AppHandle) -> Result<(), String> {
         .map_err(|e| format!("读取 profile manifest 失败: {}", e))?;
     let mut manifest: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| format!("解析 profile manifest 失败: {}", e))?;
-    let is_untouched_default = manifest
-        .pointer("/dsh/profile/bundles")
-        .and_then(|v| v.as_array())
-        .map(|b| {
-            b.len() == WEB_PROFILE_DEFAULT_BUNDLES.len()
-                && b.iter()
-                    .zip(WEB_PROFILE_DEFAULT_BUNDLES.iter())
-                    .all(|(v, name)| v.as_str() == Some(name))
-        })
-        .unwrap_or(false);
-    if is_untouched_default {
-        if let Some(bundles) = manifest
-            .pointer_mut("/dsh/profile/bundles")
-            .and_then(|v| v.as_array_mut())
-        {
-            bundles.push(serde_json::Value::String(DSH_MARKET_PACKAGE.to_string()));
-            fs::write(
-                &manifest_path,
-                serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())? + "\n",
-            )
-            .map_err(|e| format!("写入 profile manifest 失败: {}", e))?;
+    let bundles = manifest
+        .pointer_mut("/dsh/profile/bundles")
+        .and_then(|v| v.as_array_mut())
+        .ok_or_else(|| "profile manifest 缺少 dsh.profile.bundles".to_string())?;
+
+    let mut changed = false;
+    for name in PREINSTALLED_BUNDLES {
+        let already = bundles.iter().any(|v| v.as_str() == Some(name));
+        if !already {
+            bundles.push(serde_json::Value::String((*name).to_string()));
+            changed = true;
         }
+    }
+
+    if changed {
+        fs::write(
+            &manifest_path,
+            serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())? + "\n",
+        )
+        .map_err(|e| format!("写入 profile manifest 失败: {}", e))?;
     }
     Ok(())
 }
 
 fn spawn_dsh_web(app: &AppHandle) -> Result<DshProcess, String> {
-    // Preinstall the plugin market into the web profile. Optional: a failure
+    // Seed preinstalled plugins into the web profile. Optional: a failure
     // here must never block DSH from starting.
-    if let Err(e) = seed_dsh_market(app) {
-        log_error(app, &format!("预装 dsh-market 失败: {}", e));
+    if let Err(e) = seed_preinstalled_bundles(app) {
+        log_error(app, &format!("预装插件失败: {}", e));
     }
 
     let runtime = runtime_dir(app)?;
@@ -684,6 +690,7 @@ fn market_filter_script() -> String {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .manage(AppState::default())
         // Re-inject on every page load: the window first loads the local
         // shell, then navigates to the DSH web UI (a fresh page load).
