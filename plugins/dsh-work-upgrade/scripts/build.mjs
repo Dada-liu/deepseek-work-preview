@@ -7,7 +7,7 @@
  */
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
@@ -24,7 +24,8 @@ const esbuildCandidates = [
 async function loadEsbuild() {
   for (const path of esbuildCandidates) {
     try {
-      return await import(path)
+      // 动态 import 需要 file:// URL——Windows 下反斜杠路径会被当成 URL scheme
+      return await import(pathToFileURL(path).href)
     } catch {
       // 尝试下一个候选
     }
