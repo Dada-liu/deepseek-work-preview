@@ -1,6 +1,6 @@
 [package]
 name = "deepseek-work"
-version = "0.1.12"
+version = "0.1.13"
 description = "DeepSeek Work desktop agent powered by Tauri v2"
 authors = ["DeepSeek Work Team"]
 edition = "2021"
