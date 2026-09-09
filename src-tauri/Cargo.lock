@@ -663,7 +663,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-work"
-version = "0.1.14"
+version = "0.1.15"
 dependencies = [
  "chrono",
  "serde",

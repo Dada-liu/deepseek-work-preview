@@ -208,12 +208,6 @@ async fn restart_dsh_service(
     Ok(format!("DSH 服务已重启，URL: {}", url.unwrap_or_default()))
 }
 
-/// Return the application version from Cargo.
-#[tauri::command]
-fn app_version() -> String {
-    env!("CARGO_PKG_VERSION").to_string()
-}
-
 /// The bundled Node binary name differs by platform.
 fn node_bin_name() -> &'static str {
     if cfg!(windows) {
@@ -718,7 +712,6 @@ pub fn run() {
             start_dsh_service,
             stop_dsh_service,
             restart_dsh_service,
-            app_version,
             log_frontend_error
         ])
         .setup(|app| {

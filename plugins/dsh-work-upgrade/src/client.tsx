@@ -57,15 +57,15 @@ interface DownloadInfo {
 }
 
 interface TauriGlobal {
-  core?: { invoke?: (command: string) => Promise<unknown> }
+  app?: { getVersion?: () => Promise<string> }
 }
 
 /** Tauri 壳内由 withGlobalTauri 注入；纯浏览器（dsh web）没有。 */
-function tauriInvoke(command: string): Promise<string> | undefined {
+function getAppVersion(): Promise<string> | undefined {
   const tauri = (window as unknown as { __TAURI__?: TauriGlobal }).__TAURI__
-  const invoke = tauri?.core?.invoke
-  if (typeof invoke !== 'function') return undefined
-  return invoke(command) as Promise<string>
+  const getVersion = tauri?.app?.getVersion
+  if (typeof getVersion !== 'function') return undefined
+  return getVersion()
 }
 
 /** x.y.z 数字段比较：a > b 返回正数。 */
@@ -91,12 +91,12 @@ function UpgradeRow({ t, rpc }: RowProps) {
   const [busy, setBusy] = React.useState(false)
 
   React.useEffect(() => {
-    const invoked = tauriInvoke('app_version')
-    if (!invoked) {
+    const version = getAppVersion()
+    if (!version) {
       setStatus(t('desktopOnly'))
       return
     }
-    invoked
+    version
       .then((version) => setCurrent(String(version)))
       .catch((error) => {
         setStatus(`${t('error')}: ${error instanceof Error ? error.message : String(error)}`)
@@ -104,7 +104,7 @@ function UpgradeRow({ t, rpc }: RowProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const isDesktop = tauriInvoke('app_version') !== undefined
+  const isDesktop = getAppVersion() !== undefined
   const canUpdate = !busy && isDesktop && current !== '' && latest !== '' && compareVersions(latest, current) > 0
 
   const handleCheckUpdate = async () => {

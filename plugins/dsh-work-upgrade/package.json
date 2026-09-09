@@ -1,6 +1,6 @@
 {
   "name": "dsh-work-upgrade",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DSH 插件：在设置弹窗的「通用设置」底部展示 DeepSeek Work 桌面应用版本，并提供检查更新、下载升级包（国内源优先，GitHub 兜底）。",
   "license": "MIT",
   "type": "module",
