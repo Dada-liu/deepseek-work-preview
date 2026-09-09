@@ -378,11 +378,15 @@ fn ensure_runtime(app: &AppHandle, state: &State<AppState>) -> Result<PathBuf, S
 const PREINSTALLED_BUNDLES: &[&str] = &[
     "dshmarket",
     "dsh-notifier-plugin",
-    "dsh-version-plugin",
+    "dsh-work-upgrade",
     "dsh-prompt-history-plugin",
     "dsh-wooden-fish",
     "dsh-usage",
 ];
+/// Bundles that used to be preinstalled but were dropped from the runtime;
+/// filtered out of existing profiles so the loader never tries to resolve a
+/// package the runtime no longer ships.
+const RETIRED_BUNDLES: &[&str] = &["dsh-version-plugin"];
 /// The bundle list dsh's own initProfile writes for a fresh web profile.
 const WEB_PROFILE_DEFAULT_BUNDLES: [&str; 2] =
     ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"];
@@ -399,9 +403,9 @@ const PROFILE_PNPM_WORKSPACE: &str =
 /// bundled dsh copy's dependency closure, so dsh's boot-time module fallback
 /// links them into `$DSH_HOME/profiles/node_modules`); what remains here is
 /// listing them in the profile's `dsh.profile.bundles`. Only a fresh profile
-/// or a manifest missing one of the preinstalled bundles is modified — a
-/// bundles list the user has customized is left alone except for appending
-/// missing preinstalled entries.
+/// or a manifest needing reconciliation is modified — a bundles list the
+/// user has customized is otherwise left alone, except for appending missing
+/// preinstalled entries and dropping RETIRED_BUNDLES entries.
 fn seed_preinstalled_bundles(app: &AppHandle) -> Result<(), String> {
     let home = app.path().home_dir().map_err(|e| e.to_string())?;
     // Mirror dsh's home resolution ($DSH_HOME, then ~/.dsh).
@@ -448,6 +452,14 @@ fn seed_preinstalled_bundles(app: &AppHandle) -> Result<(), String> {
         .ok_or_else(|| "profile manifest 缺少 dsh.profile.bundles".to_string())?;
 
     let mut changed = false;
+    let before = bundles.len();
+    bundles.retain(|v| match v.as_str() {
+        Some(name) => !RETIRED_BUNDLES.contains(&name),
+        None => true,
+    });
+    if bundles.len() != before {
+        changed = true;
+    }
     for name in PREINSTALLED_BUNDLES {
         let already = bundles.iter().any(|v| v.as_str() == Some(name));
         if !already {

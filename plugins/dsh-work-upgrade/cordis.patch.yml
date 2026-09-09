@@ -1,0 +1,4 @@
+# 注册 dsh-work-upgrade 到 profile
+- insert:
+    - id: dsh-work-upgrade
+      name: dsh-work-upgrade

@@ -17,13 +17,15 @@ DSH_NOTIFIER_PLUGIN_REPO="https://github.com/hotpot-labs/dsh-notifier-plugin"
 DSH_NOTIFIER_PLUGIN_REF="v0.1.1"
 DSH_NOTIFIER_PLUGIN_VERSION="0.1.1"
 # Preinstalled plugins pulled straight from npm.
-DSH_VERSION_PLUGIN_VERSION="1.0.1"
 DSH_PROMPT_HISTORY_PLUGIN_VERSION="0.1.0"
 DSH_WOODEN_FISH_VERSION="0.1.0"
 # Preinstalled plugin pulled from GitHub as a git dependency, pinned tag.
 DSH_USAGE_REPO_SLUG="Aisland-SJL/dsh-usage"
 DSH_USAGE_REF="v0.3.0"
 DSH_USAGE_VERSION="0.3.0"
+# Preinstalled plugin: dsh-work-upgrade (in-repo, built from source below).
+DSH_WORK_UPGRADE_SRC="$ROOT/plugins/dsh-work-upgrade"
+DSH_WORK_UPGRADE_VERSION="0.1.0"
 # Package managers bundled next to the Node binary. The market plugin's
 # one-click installs shell out to pnpm/npm and look for them in the Node
 # binary's own directory (dshmarket dsh-cli.js nodeBinDir), so shims are
@@ -72,7 +74,7 @@ DSH_VERSION="$(cd "$ROOT" && node -p "require('./node_modules/@deepseek-ai/dsh/p
   echo "error: $DSH_SRC missing, run pnpm install first" >&2
   exit 1
 }
-echo "==> Installing @deepseek-ai/dsh@$DSH_VERSION + dshmarket@$DSH_MARKET_VERSION + dsh-notifier-plugin@$DSH_NOTIFIER_PLUGIN_VERSION + dsh-version-plugin@$DSH_VERSION_PLUGIN_VERSION + dsh-prompt-history-plugin@$DSH_PROMPT_HISTORY_PLUGIN_VERSION + dsh-wooden-fish@$DSH_WOODEN_FISH_VERSION + dsh-usage@$DSH_USAGE_VERSION (github:$DSH_USAGE_REPO_SLUG#$DSH_USAGE_REF) + npm@$NPM_VERSION + pnpm@$PNPM_VERSION into staging dir (hoisted)"
+echo "==> Installing @deepseek-ai/dsh@$DSH_VERSION + dshmarket@$DSH_MARKET_VERSION + dsh-notifier-plugin@$DSH_NOTIFIER_PLUGIN_VERSION + dsh-work-upgrade@$DSH_WORK_UPGRADE_VERSION + dsh-prompt-history-plugin@$DSH_PROMPT_HISTORY_PLUGIN_VERSION + dsh-wooden-fish@$DSH_WOODEN_FISH_VERSION + dsh-usage@$DSH_USAGE_VERSION (github:$DSH_USAGE_REPO_SLUG#$DSH_USAGE_REF) + npm@$NPM_VERSION + pnpm@$PNPM_VERSION into staging dir (hoisted)"
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 
@@ -117,6 +119,24 @@ if [ ! -f "$STAGE/$PLUGIN_TARBALL" ]; then
   exit 1
 fi
 
+# Build and pack the in-repo dsh-work-upgrade plugin. Its prepare script
+# rebuilds the same deterministic output (no variant selection), so npm pack
+# re-running it is harmless.
+echo "==> Building dsh-work-upgrade (in-repo plugin)"
+if [ ! -d "$DSH_WORK_UPGRADE_SRC" ]; then
+  echo "error: dsh-work-upgrade source not found at $DSH_WORK_UPGRADE_SRC" >&2
+  exit 1
+fi
+(cd "$DSH_WORK_UPGRADE_SRC" && node scripts/build.mjs) || {
+  echo "error: failed to build dsh-work-upgrade" >&2
+  exit 1
+}
+UPGRADE_TARBALL="$(cd "$DSH_WORK_UPGRADE_SRC" && npm pack --pack-destination "$STAGE" | tail -1)"
+if [ ! -f "$STAGE/$UPGRADE_TARBALL" ]; then
+  echo "error: npm pack did not produce $UPGRADE_TARBALL" >&2
+  exit 1
+fi
+
 # The staging install runs without a lockfile, so ^-ranged @deepseek-ai/*
 # sub-packages float to newer rc builds than the tested set in the project's
 # pnpm-lock.yaml (e.g. rc.8 needs Node APIs our bundled Node lacks). Pin
@@ -130,7 +150,7 @@ case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*) STAGE_NATIVE="$(cygpath -w "$STAGE")" ;;
 esac
 cat > "$STAGE/package.json" <<EOF
-{"name":"dsh-runtime-stage","private":true,"dependencies":{"@deepseek-ai/dsh":"$DSH_VERSION","dshmarket":"$DSH_MARKET_VERSION","dsh-notifier-plugin":"file:./$PLUGIN_TARBALL","dsh-version-plugin":"$DSH_VERSION_PLUGIN_VERSION","dsh-prompt-history-plugin":"$DSH_PROMPT_HISTORY_PLUGIN_VERSION","dsh-wooden-fish":"$DSH_WOODEN_FISH_VERSION","dsh-usage":"github:$DSH_USAGE_REPO_SLUG#$DSH_USAGE_REF","npm":"$NPM_VERSION","pnpm":"$PNPM_VERSION"}}
+{"name":"dsh-runtime-stage","private":true,"dependencies":{"@deepseek-ai/dsh":"$DSH_VERSION","dshmarket":"$DSH_MARKET_VERSION","dsh-notifier-plugin":"file:./$PLUGIN_TARBALL","dsh-work-upgrade":"file:./$UPGRADE_TARBALL","dsh-prompt-history-plugin":"$DSH_PROMPT_HISTORY_PLUGIN_VERSION","dsh-wooden-fish":"$DSH_WOODEN_FISH_VERSION","dsh-usage":"github:$DSH_USAGE_REPO_SLUG#$DSH_USAGE_REF","npm":"$NPM_VERSION","pnpm":"$PNPM_VERSION"}}
 EOF
 # Reuse the project's build-approval / release-age settings.
 cp "$ROOT/pnpm-workspace.yaml" "$STAGE/pnpm-workspace.yaml"
@@ -166,14 +186,14 @@ echo "==> Registering preinstalled plugins in the bundled dsh dependency closure
     ...pkg.dependencies,
     dshmarket: '$DSH_MARKET_VERSION',
     'dsh-notifier-plugin': '$DSH_NOTIFIER_PLUGIN_VERSION',
-    'dsh-version-plugin': '$DSH_VERSION_PLUGIN_VERSION',
+    'dsh-work-upgrade': '$DSH_WORK_UPGRADE_VERSION',
     'dsh-prompt-history-plugin': '$DSH_PROMPT_HISTORY_PLUGIN_VERSION',
     'dsh-wooden-fish': '$DSH_WOODEN_FISH_VERSION',
     'dsh-usage': '$DSH_USAGE_VERSION',
   };
   fs.writeFileSync(f, JSON.stringify(pkg, null, 2) + '\n');
 ")
-for pkg in dshmarket dsh-notifier-plugin dsh-version-plugin dsh-prompt-history-plugin dsh-wooden-fish dsh-usage; do
+for pkg in dshmarket dsh-notifier-plugin dsh-work-upgrade dsh-prompt-history-plugin dsh-wooden-fish dsh-usage; do
   [ -f "$RUNTIME/node_modules/$pkg/cordis.patch.yml" ] || {
     echo "error: $pkg bundle patch missing from the runtime tree" >&2
     exit 1
@@ -222,7 +242,7 @@ printf '@echo off\r\n"%%~dp0node.exe" "%%~dp0node_modules\\pnpm\\bin\\pnpm.cjs" 
 # (ensure_runtime in src-tauri/src/lib.rs re-extracts when it changes), so it
 # must cover everything baked into the runtime — including the preinstalled
 # plugin set and the bundled package managers, not just the dsh version.
-echo "$DSH_VERSION+dshmarket-$DSH_MARKET_VERSION+dsh-notifier-plugin-$DSH_NOTIFIER_PLUGIN_VERSION+dsh-version-plugin-$DSH_VERSION_PLUGIN_VERSION+dsh-prompt-history-plugin-$DSH_PROMPT_HISTORY_PLUGIN_VERSION+dsh-wooden-fish-$DSH_WOODEN_FISH_VERSION+dsh-usage-$DSH_USAGE_VERSION+npm-$NPM_VERSION+pnpm-$PNPM_VERSION" > "$RUNTIME/dsh-version"
+echo "$DSH_VERSION+dshmarket-$DSH_MARKET_VERSION+dsh-notifier-plugin-$DSH_NOTIFIER_PLUGIN_VERSION+dsh-work-upgrade-$DSH_WORK_UPGRADE_VERSION+dsh-prompt-history-plugin-$DSH_PROMPT_HISTORY_PLUGIN_VERSION+dsh-wooden-fish-$DSH_WOODEN_FISH_VERSION+dsh-usage-$DSH_USAGE_VERSION+npm-$NPM_VERSION+pnpm-$PNPM_VERSION" > "$RUNTIME/dsh-version"
 echo "==> DSH version: $DSH_VERSION"
 du -sh "$RUNTIME"
 
@@ -247,7 +267,7 @@ LOG="$(mktemp)"
 SMOKE_HOME="$(mktemp -d)"
 mkdir -p "$SMOKE_HOME/profiles/web"
 cat > "$SMOKE_HOME/profiles/web/package.json" <<EOF
-{"name":"dsh-profile-web","private":true,"dependencies":{},"dsh":{"profile":{"bundles":["@deepseek-ai/dsh-base","@deepseek-ai/dsh-web-app","dshmarket","dsh-notifier-plugin","dsh-version-plugin","dsh-prompt-history-plugin","dsh-wooden-fish","dsh-usage"]}}}
+{"name":"dsh-profile-web","private":true,"dependencies":{},"dsh":{"profile":{"bundles":["@deepseek-ai/dsh-base","@deepseek-ai/dsh-web-app","dshmarket","dsh-notifier-plugin","dsh-work-upgrade","dsh-prompt-history-plugin","dsh-wooden-fish","dsh-usage"]}}}
 EOF
 DSH_HOME="$SMOKE_HOME" "$RUNTIME/$NODE_BIN" "$RUNTIME/node_modules/@deepseek-ai/dsh/lib/bin.js" web --port 0 > "$LOG" 2>&1 &
 PID=$!

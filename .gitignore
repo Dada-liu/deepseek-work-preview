@@ -27,3 +27,4 @@ src-tauri/runtime
 *.njsproj
 *.sln
 *.sw?
+plugins/dsh-work-upgrade/lib/
