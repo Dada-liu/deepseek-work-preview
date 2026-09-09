@@ -14,8 +14,8 @@ DSH_MARKET_VERSION="1.45.0"
 # Preinstalled plugin: dsh-notifier-plugin (Tauri desktop variant), built
 # from the pinned GitHub tag below.
 DSH_NOTIFIER_PLUGIN_REPO="https://github.com/hotpot-labs/dsh-notifier-plugin"
-DSH_NOTIFIER_PLUGIN_REF="v0.1.0"
-DSH_NOTIFIER_PLUGIN_VERSION="0.1.0"
+DSH_NOTIFIER_PLUGIN_REF="v0.1.1"
+DSH_NOTIFIER_PLUGIN_VERSION="0.1.1"
 # Preinstalled plugins pulled straight from npm.
 DSH_VERSION_PLUGIN_VERSION="1.0.1"
 DSH_PROMPT_HISTORY_PLUGIN_VERSION="0.1.0"
